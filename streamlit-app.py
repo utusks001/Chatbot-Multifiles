@@ -216,9 +216,12 @@ if ask_btn:
 
         context_text = format_context(results)
         system_instructions = (
-            "Jawablah seakurat mungkin berdasarkan konteks berikut. "
+            "Jawablah seakurat dan sedetil mungkin sehingga mudah dipahami berdasarkan konteks berikut. "
             "Jika jawaban tidak ada, katakan: "
-            "\"Jawaban tidak tersedia dalam konteks yang diberikan.\" "
+            "\"Jawaban tidak tersedia dalam konteks yang diberikan, "
+            "pelajari dan berikan tambahan informasi yang diperlukan sesuai konteks atau topik  "
+            "yang ditanyakan dari berbagai sumber atau referensi di internet dengan menyertakan link website.\" "
+            "Sertakan referensi [angka] ke potongan konteks bila relevan."
         )
 
         composed_prompt = (
