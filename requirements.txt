@@ -8,3 +8,5 @@ langchain-community
 langchain-google-genai
 sentence-transformers
 faiss-cpu
+Pillow
+langchain-groq
