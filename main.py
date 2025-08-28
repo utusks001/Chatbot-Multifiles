@@ -89,15 +89,16 @@ def extract_text_from_pptx(file_bytes: BytesIO):
 # -------------------------
 # OCR.Space Extractor (Image Files)
 # -------------------------
-def extract_text_from_image(file_bytes: BytesIO):
+def extract_text_from_image(file_bytes: BytesIO, filename="upload.png"):
     if not OCR_SPACE_API_KEY:
         st.warning("⚠️ OCR_SPACE_API_KEY tidak ditemukan di .env")
         return ""
+
     try:
         file_bytes.seek(0)
         response = requests.post(
             "https://api.ocr.space/parse/image",
-            files={"file": file_bytes},
+            files={"file": (filename, file_bytes, "image/png")},
             data={"apikey": OCR_SPACE_API_KEY, "language": "eng"},
         )
         result = response.json()
@@ -127,7 +128,7 @@ def extract_text_from_file(uploaded_file):
     elif name.endswith(".pptx"):
         return extract_text_from_pptx(BytesIO(raw))
     elif name.endswith((".jpg", ".jpeg", ".png", ".gif", ".bmp", ".jfif")):
-        return extract_text_from_image(BytesIO(raw))
+        return extract_text_from_image(BytesIO(raw), filename=uploaded_file.name)
     elif name.endswith(".doc") or name.endswith(".ppt"):
         st.warning(f"⚠️ File `{uploaded_file.name}` berformat lama (.doc/.ppt). Silakan konversi ke .docx/.pptx.")
         return ""
@@ -286,3 +287,4 @@ if ask_btn:
 
         except Exception as e:
             st.error(f"❌ Error saat memanggil LLM: {e}")
+
