@@ -10,3 +10,4 @@ sentence-transformers
 faiss-cpu
 Pillow
 langchain-groq
+requests
