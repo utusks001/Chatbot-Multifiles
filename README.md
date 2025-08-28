@@ -16,11 +16,21 @@ Aplikasi **Streamlit Chatbot** yang mendukung:
 - Simpan teks ke dalam **FAISS Vector Store**
 - Tanya jawab dengan dokumen menggunakan **Gemini** atau **Groq**
 
----
 
-## 📦 Instalasi Lokal
+# Setup & Installation
 
-1. **Clone repo:**
-   ```bash
-   git clone https://github.com/username/gemini-groq-chatbot.git
-   cd gemini-groq-chatbot
+## 1. Clone atau download repostiroy ini
+git clone https://github.com/utusks001/Chatbot-Multifiles.git
+
+## 2. Install Dependencies:
+pip install -r requirements.txt
+//Make sure you have Python 3.7+ installed.
+
+## 3. Set Environment Variables: buat file dengan nama .env kemudian isi file tersebut dengan API Keys sebagai berikut Example:
+- GROQ_API_KEY = "GROQQ API KEY"
+- GOOGLE_API_KEY = "GOOGLE API KEY"
+
+## 4. Run Streamlit di local
+streamlit run main.py
+
+## 5. Lalu deploy ke https://share.streamlit.io/
