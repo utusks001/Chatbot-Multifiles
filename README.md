@@ -33,4 +33,5 @@ pip install -r requirements.txt
 ## 4. Run Streamlit di local
 streamlit run main.py
 
-## 5. Lalu deploy ke https://share.streamlit.io/
+## 5. Lalu deploy ke 
+https://share.streamlit.io/
