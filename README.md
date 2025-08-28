@@ -1,4 +1,5 @@
-# 🤖 Gemini + Groq Multi-file Chatbot (FAISS + OCR.Space)
+# 🤖 Gemini 2.5 Flash + Groq Chatbot — Multi-files + OCR.Space
+(https://chatbot-multifiles-images-ocr.streamlit.app/)
 
 Aplikasi **Streamlit Chatbot** yang mendukung:
 - 📄 Upload multi-file: **PDF, TXT, DOCX, PPTX**
