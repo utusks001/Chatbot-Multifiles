@@ -225,7 +225,7 @@ if st.session_state.indexed_files:
 # -------------------------
 model_choice = st.sidebar.radio(
     "Pilih LLM Provider:",
-    ["Gemini 2.5 Flash (Google)", "Groq (LLaMA-3.1-70B)"]
+    ["Gemini 2.5 Flash (Google)", "Groq (llama-3.3-70b-versatile)"]
 )
 
 # -------------------------
@@ -274,7 +274,7 @@ if ask_btn:
                 llm = ChatGroq(
                     temperature=0.2,
                     groq_api_key=GROQ_API_KEY,
-                    model_name="llama-3.1-70b-versatile"
+                    model_name="llama-3.3-70b-versatile"
                 )
                 with st.spinner("⚡ Groq sedang menjawab..."):
                     response = llm.invoke(composed_prompt)
