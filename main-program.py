@@ -112,11 +112,18 @@ def extract_text_from_image(file_bytes, filename="upload.png"):
 # -------------------------
 # DataFrame helpers
 # -------------------------
+def safe_describe(df):
+    """Fallback describe untuk semua versi pandas"""
+    try:
+        return df.describe(include="all", datetime_is_numeric=True)
+    except TypeError:
+        return df.describe(include="all")
+
 def df_profile_text(df, name="", sheet_name=None):
     rows, cols = df.shape
     dtypes = df.dtypes.astype(str).to_dict()
     missing = df.isna().sum().to_dict()
-    stats = df.describe(include="all", datetime_is_numeric=True).transpose().reset_index().to_string(index=False)
+    stats = safe_describe(df).transpose().reset_index().to_string(index=False)
     sample_csv = df.head(50).to_csv(index=False)
 
     header = f"DATAFRAME SUMMARY — file={name}" + (f", sheet={sheet_name}" if sheet_name else "")
@@ -253,8 +260,9 @@ def auto_analyze_dataframe(df, name="", sheet_name=None, show_in_app=True):
     output_excel = BytesIO()
     with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Data")
-        df.describe(include="all").to_excel(writer, sheet_name="Summary")
-        num_cols.corr().to_excel(writer, sheet_name="Correlation")
+        safe_describe(df).to_excel(writer, sheet_name="Summary")
+        if not num_cols.empty:
+            num_cols.corr().to_excel(writer, sheet_name="Correlation")
     output_excel.seek(0)
 
     # Export HTML (simple)
