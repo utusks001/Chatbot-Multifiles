@@ -263,23 +263,24 @@ def auto_analyze_dataframe(df, filename, sheet_name, show_in_app=True):
         st.write("**info():**")
         st.text(df_info_text(df))
 
+        # Outlier Detection (Boxplot) untuk Sales, Quantity, Profit
+        target_cols = [c for c in ["Sales", "Quantity", "Profit"] if c in df.columns]
+        if target_cols:
+            st.write("**Outlier Detection (Boxplot):**")
+            for col in target_cols:
+                fig, ax = plt.subplots(figsize=(5, 3))
+                sns.boxplot(x=df[col], ax=ax)
+                ax.set_title(f"Outliers — {col}")
+                st.pyplot(fig)
+
         # Correlation heatmap
         if not num_df.empty:
             corr = num_df.corr()
             st.write("**Correlation matrix:**")
             st.dataframe(corr)
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(figsize=(5, 3))
             sns.heatmap(corr, annot=True, cmap="coolwarm", ax=ax)
             st.pyplot(fig)
-
-        # Outlier detection + Boxplots
-        if not num_df.empty:
-            st.write("**Outlier Detection (Boxplot):**")
-            for col in num_df.columns:
-                fig, ax = plt.subplots()
-                sns.boxplot(x=num_df[col], ax=ax)
-                ax.set_title(f"Outliers — {col}")
-                st.pyplot(fig)
 
         # Flexible Top/Bottom-N
         st.markdown("---")
