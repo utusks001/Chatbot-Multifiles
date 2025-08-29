@@ -121,29 +121,33 @@ def extract_text_from_image(file_bytes, filename="upload.png"):
         resp = requests.post(
             "https://api.ocr.space/parse/image",
             files={"file": (filename, BytesIO(data), "image/png")},
-            data={"apikey": OCR_SPACE_API_KEY, "language": "eng"},
+            data={
+                "apikey": OCR_SPACE_API_KEY,
+                "language": "eng",
+                "isOverlayRequired": False
+            },
             timeout=60
         )
 
-        # ✅ Fix: aman dari response bukan JSON
+        # ✅ Debug patch
         try:
             result = resp.json()
         except Exception:
-            st.warning("⚠️ OCR.Space tidak mengembalikan JSON. Respons mentah: " + resp.text[:200])
+            st.error("⚠️ OCR.Space tidak balas JSON.\n\nRespons mentah:\n\n" + resp.text[:500])
             return ""
 
         if not isinstance(result, dict):
-            st.warning("⚠️ OCR.Space respons bukan JSON valid.")
+            st.error("⚠️ OCR.Space respons bukan JSON valid.\n\nRespons mentah:\n\n" + str(result)[:500])
             return ""
 
         if result.get("IsErroredOnProcessing"):
-            st.warning("⚠️ OCR.Space error: " + str(result.get("ErrorMessage", ['Unknown error'])))
+            st.error("⚠️ OCR.Space error: " + str(result.get("ErrorMessage", ['Unknown error'])))
             return ""
 
         parsed = [p.get("ParsedText", "") for p in result.get("ParsedResults", []) if isinstance(p, dict)]
         return "\n".join(parsed).strip()
     except Exception as e:
-        st.warning(f"⚠️ OCR error: {e}")
+        st.error(f"⚠️ OCR error: {e}")
         return ""
 
 def extract_text_from_csv(file_bytes, filename):
