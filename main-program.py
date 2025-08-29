@@ -162,7 +162,7 @@ def extract_text_from_excel(file_bytes, filename):
         return ""
 
 # -------------------------
-# Dispatcher (fix: always fresh BytesIO)
+# Dispatcher
 # -------------------------
 def extract_text_from_file(uploaded_file):
     name = uploaded_file.name
@@ -266,6 +266,14 @@ if uploaded_files and uploaded_files != st.session_state.last_uploaded:
     for f in uploaded_files:
         extract_text_from_file(f)
 
+# ✅ Tombol reset manual
+if st.sidebar.button("🧹 Reset Data"):
+    st.session_state.vector_store = None
+    st.session_state.indexed_files = []
+    st.session_state.dataframes = {}
+    st.session_state.last_uploaded = []
+    st.sidebar.success("Data berhasil direset.")
+
 if st.sidebar.button("🚀 Build Vector Store"):
     if uploaded_files:
         with st.spinner("Membangun vector store..."):
@@ -338,5 +346,12 @@ if ask_btn:
 
             st.subheader("💬 Jawaban")
             st.write(getattr(resp, "content", str(resp)))
+
+            # 🔎 Referensi
+            if results:
+                st.markdown("**📚 Referensi:**")
+                for i, d in enumerate(results):
+                    source = d.metadata.get("source", "Unknown Source")
+                    st.markdown(f"[{i+1}] {source}")
         except Exception as e:
             st.error(f"❌ LLM error: {e}")
