@@ -349,3 +349,54 @@ if st.session_state.dataframes:
             for sheet, df in payload["sheets"].items():
                 st.markdown(f"**Sheet:** {sheet}")
                 auto_analyze_dataframe(df, name=fname, sheet_name=sheet, show_in_app=show_in_app)
+
+# -------------------------
+# Query area (selalu tampil)
+# -------------------------
+st.subheader("💬 Ajukan Pertanyaan")
+prompt = st.text_input(
+    "Tanyakan sesuatu berdasarkan dokumen/tabel yang diupload:",
+    placeholder="Misal: Ringkas tren penjualan per wilayah 2024"
+)
+ask_btn = st.button("Tanyakan")
+
+if ask_btn:
+    if not prompt.strip():
+        st.warning("Masukkan pertanyaan terlebih dahulu.")
+    elif st.session_state.vector_store is None:
+        st.info("Belum ada vector store. Upload file dan klik 'Build Vector Store'.")
+    else:
+        with st.spinner("🔎 Mengambil konteks dari vector store..."):
+            results = st.session_state.vector_store.similarity_search(prompt, k=5)
+
+        context_text = "\n\n".join([d.page_content for d in results])
+        composed_prompt = (
+            "Jawablah seakurat mungkin berdasarkan konteks berikut.\n\n"
+            f"=== KONTEX ===\n{context_text}\n\n"
+            f"=== PERTANYAAN ===\n{prompt}\n\n"
+            f"=== JAWABAN ==="
+        )
+
+        try:
+            if st.sidebar.radio("Pilih LLM Provider:", ["Gemini 2.5 Flash (Google)", "Groq (llama-3.3-70b-versatile)"]) \
+                .startswith("Gemini"):
+                from langchain_google_genai import ChatGoogleGenerativeAI
+                llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
+                with st.spinner("🤖 Gemini sedang menjawab..."):
+                    response = llm.invoke(composed_prompt)
+            else:
+                from langchain_groq import ChatGroq
+                llm = ChatGroq(
+                    temperature=0.2,
+                    groq_api_key=GROQ_API_KEY,
+                    model_name="llama-3.3-70b-versatile"
+                )
+                with st.spinner("⚡ Groq sedang menjawab..."):
+                    response = llm.invoke(composed_prompt)
+
+            st.subheader("💬 Jawaban")
+            out_text = getattr(response, "content", None) or str(response)
+            st.write(out_text)
+
+        except Exception as e:
+            st.error(f"❌ Error saat memanggil LLM: {e}")
