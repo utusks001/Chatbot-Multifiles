@@ -117,17 +117,30 @@ def extract_text_from_image(file_bytes, filename="upload.png"):
         if not data:
             st.warning(f"⚠️ Gambar {filename} kosong atau gagal terbaca.")
             return ""
+
         resp = requests.post(
             "https://api.ocr.space/parse/image",
             files={"file": (filename, BytesIO(data), "image/png")},
             data={"apikey": OCR_SPACE_API_KEY, "language": "eng"},
             timeout=60
         )
-        result = resp.json()
+
+        # ✅ Fix: aman dari response bukan JSON
+        try:
+            result = resp.json()
+        except Exception:
+            st.warning("⚠️ OCR.Space tidak mengembalikan JSON. Respons mentah: " + resp.text[:200])
+            return ""
+
+        if not isinstance(result, dict):
+            st.warning("⚠️ OCR.Space respons bukan JSON valid.")
+            return ""
+
         if result.get("IsErroredOnProcessing"):
             st.warning("⚠️ OCR.Space error: " + str(result.get("ErrorMessage", ['Unknown error'])))
             return ""
-        parsed = [p.get("ParsedText", "") for p in result.get("ParsedResults", [])]
+
+        parsed = [p.get("ParsedText", "") for p in result.get("ParsedResults", []) if isinstance(p, dict)]
         return "\n".join(parsed).strip()
     except Exception as e:
         st.warning(f"⚠️ OCR error: {e}")
