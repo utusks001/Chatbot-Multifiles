@@ -130,9 +130,13 @@ def extract_text_from_image(file_bytes, filename="upload.png"):
         return ""
     try:
         file_bytes.seek(0)
+        data = file_bytes.read()
+        if len(data) == 0:
+            st.warning(f"⚠️ Gambar {filename} kosong atau gagal terbaca.")
+            return ""
         resp = requests.post(
             "https://api.ocr.space/parse/image",
-            files={"file": (filename, file_bytes, "image/png")},
+            files={"file": (filename, BytesIO(data), "image/png")},
             data={"apikey": OCR_SPACE_API_KEY, "language": "eng"},
             timeout=60
         )
@@ -140,9 +144,7 @@ def extract_text_from_image(file_bytes, filename="upload.png"):
         if result.get("IsErroredOnProcessing"):
             st.warning("⚠️ OCR.Space error: " + str(result.get("ErrorMessage", ["Unknown error"])))
             return ""
-        parsed = []
-        for p in result.get("ParsedResults", []):
-            parsed.append(p.get("ParsedText", ""))
+        parsed = [p.get("ParsedText", "") for p in result.get("ParsedResults", [])]
         return "\n".join(parsed).strip()
     except Exception as e:
         st.warning(f"⚠️ OCR error: {e}")
@@ -290,24 +292,6 @@ def auto_analyze_dataframe(df, filename, sheet_name, show_in_app=True):
             fig, ax = plt.subplots(figsize=(5, 3))
             sns.heatmap(corr, annot=True, cmap="coolwarm", ax=ax)
             st.pyplot(fig)
-
-        # Flexible Top/Bottom-N
-        st.markdown("---")
-        st.markdown("### Pilih kolom untuk Top/Bottom-N")
-        col_list = list(df.columns)
-        if col_list:
-            widget_prefix = f"{filename}___{sheet_name}"
-            chosen_col = st.selectbox("Pilih kolom:", options=col_list, key=f"col_{widget_prefix}")
-            max_n = min(100, len(df))
-            chosen_n = st.slider("Jumlah baris (N):", 1, max_n, 10, key=f"n_{widget_prefix}")
-            order = st.radio("Urutan:", ["Top N (descending)", "Bottom N (ascending)"], key=f"ord_{widget_prefix}", horizontal=True)
-            if st.button("Tampilkan", key=f"btn_{widget_prefix}"):
-                if pd.api.types.is_numeric_dtype(df[chosen_col]):
-                    asc = (order == "Bottom N (ascending)")
-                    st.dataframe(df.sort_values(by=chosen_col, ascending=asc).head(chosen_n))
-                else:
-                    vc = df[chosen_col].value_counts(ascending=(order=="Bottom N (ascending)")).head(chosen_n)
-                    st.dataframe(vc.to_frame("count"))
 
     # Download buttons
     c1, c2 = st.columns(2)
