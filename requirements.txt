@@ -11,6 +11,7 @@ faiss-cpu
 Pillow
 langchain-groq
 requests
+xlrd==1.2.0   # untuk .xls (versi baru xlrd drop dukungan xlsx)
 pandas
 openpyxl
-xlrd==1.2.0   # untuk .xls (versi baru xlrd drop dukungan xlsx)
+matplotlib
