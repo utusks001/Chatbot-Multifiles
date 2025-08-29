@@ -3,13 +3,15 @@ from io import BytesIO
 import requests
 import streamlit as st
 from dotenv import load_dotenv
+import base64
 
 # File parsing
 from PyPDF2 import PdfReader
 from docx import Document as DocxDocument
 from pptx import Presentation as PptxPresentation
 from PIL import Image
-import pandas as pd  # ⬅️ NEW
+import pandas as pd
+import matplotlib.pyplot as plt
 
 # LangChain / VectorStore / Embeddings / LLM
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -26,7 +28,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY")
 
 st.set_page_config(
-    page_title="Gemini + Groq Multi-file Chatbot (FAISS + OCR.Space + CSV/Excel)",
+    page_title="Gemini + Groq Multi-file Chatbot",
     page_icon="🤖",
     layout="wide"
 )
@@ -35,12 +37,12 @@ if not (GOOGLE_API_KEY or GROQ_API_KEY):
     st.error("❌ GOOGLE_API_KEY atau GROQ_API_KEY tidak ditemukan. Tambahkan ke file .env sebelum menjalankan.")
     st.stop()
 
-# Embeddings
+# Embeddings & splitter
 EMBEDDINGS = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 SPLITTER = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120)
 
 # -------------------------
-# File extractors - teks dokumen
+# File extractors
 # -------------------------
 def extract_text_from_pdf(file_bytes):
     text = ""
@@ -86,9 +88,6 @@ def extract_text_from_pptx(file_bytes):
         st.warning(f"⚠️ Gagal ekstrak PPTX: {e}")
     return text
 
-# -------------------------
-# OCR.Space Extractor (Image Files)
-# -------------------------
 def extract_text_from_image(file_bytes, filename="upload.png"):
     if not OCR_SPACE_API_KEY:
         st.warning("⚠️ OCR_SPACE_API_KEY tidak ditemukan di .env")
@@ -111,50 +110,37 @@ def extract_text_from_image(file_bytes, filename="upload.png"):
         return ""
 
 # -------------------------
-# Helpers untuk DataFrame ➜ teks (untuk indexing + RAG)
+# DataFrame helpers
 # -------------------------
-def df_profile_text(df, name="", sheet_name=None, max_rows_for_sample=200):
-    try:
-        # Profil ringkas
-        rows, cols = df.shape
-        dtypes = df.dtypes.astype(str).to_dict()
-        missing = df.isna().sum().to_dict()
-        # Statistik numerik (ringkas)
-        stats = df.describe(include="all", datetime_is_numeric=True).transpose().reset_index().to_string(index=False)
-        # Sampel baris (biar tidak meledak)
-        sample = df.head(max_rows_for_sample)
-        sample_csv = sample.to_csv(index=False)
+def df_profile_text(df, name="", sheet_name=None):
+    rows, cols = df.shape
+    dtypes = df.dtypes.astype(str).to_dict()
+    missing = df.isna().sum().to_dict()
+    stats = df.describe(include="all", datetime_is_numeric=True).transpose().reset_index().to_string(index=False)
+    sample_csv = df.head(50).to_csv(index=False)
 
-        header = f"DATAFRAME SUMMARY — file={name}" + (f", sheet={sheet_name}" if sheet_name else "")
-        block = [
-            header,
-            f"shape: {rows} rows x {cols} cols",
-            f"dtypes: {dtypes}",
-            f"missing_counts: {missing}",
-            "describe():",
-            stats,
-            "sample(head):",
-            sample_csv
-        ]
-        return "\n".join([str(x) for x in block if x is not None])
-    except Exception as e:
-        return f"[profiling error] {e}"
+    header = f"DATAFRAME SUMMARY — file={name}" + (f", sheet={sheet_name}" if sheet_name else "")
+    block = [
+        header,
+        f"shape: {rows} rows x {cols} cols",
+        f"dtypes: {dtypes}",
+        f"missing_counts: {missing}",
+        "describe():",
+        stats,
+        "sample(head):",
+        sample_csv
+    ]
+    return "\n".join([str(x) for x in block if x is not None])
 
-# -------------------------
-# Ekstraktor CSV / Excel
-# -------------------------
 def extract_text_from_csv(file_bytes, filename):
     try:
         file_bytes.seek(0)
-        # Upayakan encoding umum; fallback ke 'latin-1'
         try:
             df = pd.read_csv(file_bytes)
         except Exception:
             file_bytes.seek(0)
             df = pd.read_csv(file_bytes, encoding="latin-1")
-        # simpan df ke session untuk preview
         st.session_state.dataframes[filename] = {"type": "csv", "sheets": {"CSV": df}}
-        # return teks untuk index
         return df_profile_text(df, name=filename, sheet_name="CSV")
     except Exception as e:
         st.warning(f"⚠️ Gagal baca CSV: {e}")
@@ -164,7 +150,7 @@ def extract_text_from_excel(file_bytes, filename):
     text_parts = []
     try:
         file_bytes.seek(0)
-        xls = pd.ExcelFile(file_bytes)  # butuh openpyxl (xlsx) / xlrd (xls)
+        xls = pd.ExcelFile(file_bytes)
         sheet_map = {}
         for s in xls.sheet_names:
             try:
@@ -180,9 +166,6 @@ def extract_text_from_excel(file_bytes, filename):
         st.warning(f"⚠️ Gagal baca Excel: {e}")
         return ""
 
-# -------------------------
-# Generic extractor
-# -------------------------
 def extract_text_from_file(uploaded_file):
     name = uploaded_file.name.lower()
     raw = uploaded_file.read()
@@ -202,9 +185,6 @@ def extract_text_from_file(uploaded_file):
         return extract_text_from_excel(BytesIO(raw), uploaded_file.name)
     elif name.endswith((".jpg", ".jpeg", ".png", ".gif", ".bmp", ".jfif")):
         return extract_text_from_image(BytesIO(raw), filename=uploaded_file.name)
-    elif name.endswith(".doc") or name.endswith(".ppt"):
-        st.warning(f"⚠️ File `{uploaded_file.name}` berformat lama (.doc/.ppt). Silakan konversi ke .docx/.pptx.")
-        return ""
     else:
         st.warning(f"⚠️ Tipe file `{uploaded_file.name}` tidak didukung.")
         return ""
@@ -230,35 +210,89 @@ def build_faiss_from_documents(docs):
     return vs
 
 # -------------------------
-# Prompt formatting helpers
+# Auto Analysis for DataFrame
 # -------------------------
-def format_context(snippets):
-    parts = []
-    for idx, d in enumerate(snippets, start=1):
-        src = d.metadata.get("source_file", "unknown")
-        cid = d.metadata.get("chunk_id", "-")
-        parts.append(f"[{idx}] ({src}#chunk-{cid})\n{d.page_content}")
-    return "\n\n---\n\n".join(parts)
+def auto_analyze_dataframe(df, name="", sheet_name=None, show_in_app=True):
+    report_str = []
+    rows, cols = df.shape
 
-def render_sources(snippets):
-    with st.expander("🔎 Sumber konteks yang dipakai"):
-        for i, d in enumerate(snippets, start=1):
-            src = d.metadata.get("source_file", "unknown")
-            cid = d.metadata.get("chunk_id", "-")
-            preview = d.page_content[:300].replace("\n", " ")
-            st.markdown(f"**[{i}]** **{src}** (chunk {cid})")
-            st.caption(preview + ("..." if len(d.page_content) > 300 else ""))
+    # Summary
+    report_str.append(f"Dataset shape: {rows} rows × {cols} cols")
+    report_str.append("Tipe data:\n" + str(df.dtypes.astype(str)))
+    report_str.append("Missing values:\n" + str(df.isna().sum()))
+    
+    # Correlation
+    num_cols = df.select_dtypes(include="number")
+    if not num_cols.empty:
+        report_str.append("Correlation matrix:\n" + str(num_cols.corr()))
+    
+    # Trend waktu
+    for col in df.columns:
+        if any(x in col.lower() for x in ["date", "time", "tanggal"]):
+            try:
+                df[col] = pd.to_datetime(df[col])
+                trend = df.groupby(df[col].dt.to_period("M")).size()
+                report_str.append(f"Trend waktu berdasarkan {col}:\n{trend}")
+                break
+            except Exception:
+                pass
+
+    # Outliers
+    if not num_cols.empty:
+        for c in num_cols.columns:
+            q1 = num_cols[c].quantile(0.25)
+            q3 = num_cols[c].quantile(0.75)
+            iqr = q3 - q1
+            outliers = num_cols[(num_cols[c] < q1 - 1.5*iqr) | (num_cols[c] > q3 + 1.5*iqr)]
+            if not outliers.empty:
+                report_str.append(f"Outliers di kolom {c}:\n{outliers.head(20)}")
+
+    report_text = "\n\n".join(report_str)
+
+    # Export Excel
+    output_excel = BytesIO()
+    with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Data")
+        df.describe(include="all").to_excel(writer, sheet_name="Summary")
+        num_cols.corr().to_excel(writer, sheet_name="Correlation")
+    output_excel.seek(0)
+
+    # Export HTML (simple)
+    output_html = f"<html><body><pre>{report_text}</pre></body></html>".encode("utf-8")
+
+    # UI
+    if show_in_app:
+        st.write("**Preview data:**")
+        st.dataframe(df.head())
+        st.write(report_text)
+
+    # Download buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            "⬇️ Download laporan Excel",
+            data=output_excel,
+            file_name=f"analysis_{name}_{sheet_name}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    with col2:
+        st.download_button(
+            "⬇️ Download laporan HTML",
+            data=output_html,
+            file_name=f"analysis_{name}_{sheet_name}.html",
+            mime="text/html"
+        )
 
 # -------------------------
 # Streamlit UI
 # -------------------------
-st.title("🤖 Gemini 2.5 Flash + Groq — Multi-files + OCR.Space + CSV/XLS/XLSX")
-st.write("Upload banyak file (PDF, TXT, DOCX, PPTX, Images, **CSV/XLS/XLSX**). Tabel akan dipreview & diprofiling, lalu ikut di-index untuk Q&A.")
+st.title("🤖 Gemini 2.5 Flash + Groq — Multi-files + Analisa Data Otomatis")
+st.write("Upload file (PDF, TXT, DOCX, PPTX, Images, CSV, XLS, XLSX). Data Excel/CSV akan dianalisa otomatis & bisa diexport.")
 
 # Sidebar
 st.sidebar.header("📂 Upload & Build")
 uploaded_files = st.sidebar.file_uploader(
-    "Upload files (pdf, txt, docx, pptx, images, csv, xls, xlsx) — boleh banyak",
+    "Upload files",
     type=["pdf", "txt", "docx", "pptx", "jpg", "jpeg", "png", "gif", "bmp", "jfif", "csv", "xls", "xlsx"],
     accept_multiple_files=True
 )
@@ -292,102 +326,18 @@ if build_btn:
                 st.session_state.indexed_files = [f.name for f in uploaded_files]
                 st.sidebar.success(f"Vector store terbangun. Dokumen: {len(st.session_state.indexed_files)} | Chunk total: {len(docs)}")
 
-# Show indexed files
 if st.session_state.indexed_files:
     st.markdown("**Dokumen terindeks:**")
     st.write(" • " + "\n • ".join(st.session_state.indexed_files))
 
 # -------------------------
-# 📊 Data Preview & Profiling
+# Data Preview + Auto Analysis
 # -------------------------
 if st.session_state.dataframes:
-    st.subheader("📊 Data Preview & Profiling")
+    st.subheader("📊 Data Preview, Profiling & Analisa Otomatis")
+    show_in_app = st.checkbox("Tampilkan analisa di Streamlit", value=True)
     for fname, payload in st.session_state.dataframes.items():
         with st.expander(f"🔎 {fname}"):
             for sheet, df in payload["sheets"].items():
                 st.markdown(f"**Sheet:** {sheet}")
-                r, c = df.shape
-                st.caption(f"shape: {r} rows × {c} cols")
-                st.dataframe(df.head(50))
-                # Ringkas tipe & missing
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write("**dtypes**")
-                    st.write(pd.DataFrame({"dtype": df.dtypes.astype(str)}))
-                with col2:
-                    st.write("**missing (count)**")
-                    st.write(df.isna().sum().to_frame("missing"))
-                # Statistik numerik ringkas
-                with st.expander("📈 describe()"):
-                    try:
-                        st.write(df.describe(include="all", datetime_is_numeric=True))
-                    except Exception as e:
-                        st.warning(f"describe() error: {e}")
-
-# -------------------------
-# Pilih LLM Provider
-# -------------------------
-model_choice = st.sidebar.radio(
-    "Pilih LLM Provider:",
-    ["Gemini 2.5 Flash (Google)", "Groq (llama-3.3-70b-versatile)"]
-)
-
-# -------------------------
-# Query area
-# -------------------------
-prompt = st.text_input(
-    "Tanyakan sesuatu berdasarkan dokumen/tabel yang diupload:",
-    placeholder="Misal: Ringkas tren penjualan per wilayah 2024; atau 'kolom mana yang paling banyak missing?'"
-)
-ask_btn = st.button("Tanyakan")
-
-if ask_btn:
-    if not prompt.strip():
-        st.warning("Masukkan pertanyaan terlebih dahulu.")
-    elif st.session_state.vector_store is None:
-        st.info("Belum ada vector store. Upload file dan klik 'Build Vector Store'.")
-    else:
-        with st.spinner("🔎 Mengambil konteks dari vector store..."):
-            results = st.session_state.vector_store.similarity_search(prompt, k=5)
-
-        context_text = format_context(results)
-        system_instructions = (
-            "Jawablah seakurat dan sedetil mungkin berdasarkan konteks berikut. "
-            "Jika konteks berupa ringkasan tabel (CSV/Excel), gunakan metrik yang tersedia (shape, dtypes, missing, describe, sample). "
-            "Jika jawaban tidak ada, katakan: "
-            "\"Jawaban tidak tersedia dalam konteks yang diberikan, "
-            "pelajari dan berikan tambahan informasi yang diperlukan sesuai konteks atau topik "
-            "yang ditanyakan dari berbagai sumber atau referensi di internet dengan menyertakan link website.\" "
-            "Sertakan referensi [angka] ke potongan konteks bila relevan."
-        )
-
-        composed_prompt = (
-            f"{system_instructions}\n\n"
-            f"=== KONTEX ===\n{context_text}\n\n"
-            f"=== PERTANYAAN ===\n{prompt}\n\n"
-            f"=== JAWABAN ==="
-        )
-
-        try:
-            if model_choice.startswith("Gemini"):
-                from langchain_google_genai import ChatGoogleGenerativeAI
-                llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
-                with st.spinner("🤖 Gemini sedang menjawab..."):
-                    response = llm.invoke(composed_prompt)
-            else:
-                from langchain_groq import ChatGroq
-                llm = ChatGroq(
-                    temperature=0.2,
-                    groq_api_key=GROQ_API_KEY,
-                    model_name="llama-3.3-70b-versatile"
-                )
-                with st.spinner("⚡ Groq sedang menjawab..."):
-                    response = llm.invoke(composed_prompt)
-
-            st.subheader("💬 Jawaban")
-            out_text = getattr(response, "content", None) or str(response)
-            st.write(out_text)
-            render_sources(results)
-
-        except Exception as e:
-            st.error(f"❌ Error saat memanggil LLM: {e}")
+                auto_analyze_dataframe(df, name=fname, sheet_name=sheet, show_in_app=show_in_app)
