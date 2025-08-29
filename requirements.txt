@@ -1,4 +1,4 @@
-streamlit
+streamlit>=1.20
 python-dotenv
 PyPDF2
 python-docx
@@ -12,6 +12,6 @@ Pillow
 langchain-groq
 requests
 xlrd==1.2.0   # untuk .xls (versi baru xlrd drop dukungan xlsx)
-pandas
+pandas>=1.0
 openpyxl
 matplotlib
