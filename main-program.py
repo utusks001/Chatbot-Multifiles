@@ -3,23 +3,22 @@ from io import BytesIO
 import requests
 import streamlit as st
 from dotenv import load_dotenv
-
-# File parsing
-from PyPDF2 import PdfReader
-from docx import Document as DocxDocument
-from pptx import Presentation as PptxPresentation
-from PIL import Image
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# LangChain / VectorStore / Embeddings / LLM
+# Document parsing
+from PyPDF2 import PdfReader
+from docx import Document as DocxDocument
+from pptx import Presentation as PptxPresentation
+
+# LangChain / VectorStore / Embeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
 # -------------------------
-# Config
+# Config / env
 # -------------------------
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -28,16 +27,43 @@ OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY")
 
 st.set_page_config(page_title="Chatbot + Auto Analysis", page_icon="🤖", layout="wide")
 
-if not (GOOGLE_API_KEY or GROQ_API_KEY):
-    st.error("❌ GOOGLE_API_KEY atau GROQ_API_KEY tidak ditemukan di .env.")
-    st.stop()
+# -------------------------
+# Session state init (fix bug)
+# -------------------------
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
+if "indexed_files" not in st.session_state:
+    st.session_state.indexed_files = []
+if "dataframes" not in st.session_state:
+    st.session_state.dataframes = {}  # { filename: { "sheets": {sheet_name: df, ...} }, ... }
 
+# -------------------------
+# Sidebar: Upload + LLM choice + Actions
+# -------------------------
+st.sidebar.header("📂 Upload & Build")
+uploaded_files = st.sidebar.file_uploader(
+    "Upload files (pdf, txt, docx, pptx, images, csv, xls, xlsx) — boleh banyak",
+    type=["pdf", "txt", "docx", "pptx", "jpg", "jpeg", "png", "gif", "bmp", "jfif", "csv", "xls", "xlsx"],
+    accept_multiple_files=True
+)
+
+llm_choice = st.sidebar.radio(
+    "Pilih LLM Provider:",
+    ["Gemini 2.5 Flash (Google)", "Groq (llama-3.3-70b-versatile)"],
+    index=0
+)
+
+build_btn = st.sidebar.button("🚀 Build Vector Store")
+clear_btn = st.sidebar.button("🧹 Reset All")
+
+# -------------------------
 # Embeddings & splitter
+# -------------------------
 EMBEDDINGS = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 SPLITTER = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120)
 
 # -------------------------
-# Helpers
+# Helpers / compatibility
 # -------------------------
 def safe_describe(df):
     try:
@@ -45,8 +71,14 @@ def safe_describe(df):
     except TypeError:
         return df.describe(include="all")
 
+def df_info_text(df):
+    import io
+    buf = io.StringIO()
+    df.info(buf=buf)
+    return buf.getvalue()
+
 # -------------------------
-# File Extractors
+# File extractors
 # -------------------------
 def extract_text_from_pdf(file_bytes):
     text = ""
@@ -63,7 +95,7 @@ def extract_text_from_pdf(file_bytes):
 def extract_text_from_txt(file_bytes):
     try:
         return file_bytes.read().decode("utf-8", errors="ignore")
-    except:
+    except Exception:
         return ""
 
 def extract_text_from_docx(file_bytes):
@@ -93,7 +125,7 @@ def extract_text_from_pptx(file_bytes):
 
 def extract_text_from_image(file_bytes, filename="upload.png"):
     if not OCR_SPACE_API_KEY:
-        st.warning("⚠️ OCR_SPACE_API_KEY tidak ditemukan")
+        st.warning("⚠️ OCR_SPACE_API_KEY tidak ditemukan di .env — image OCR dinonaktifkan.")
         return ""
     try:
         file_bytes.seek(0)
@@ -105,178 +137,372 @@ def extract_text_from_image(file_bytes, filename="upload.png"):
         )
         result = resp.json()
         if result.get("IsErroredOnProcessing"):
+            st.warning("⚠️ OCR.Space error: " + str(result.get("ErrorMessage", ["Unknown error"])))
             return ""
-        return "\n".join([p.get("ParsedText","") for p in result.get("ParsedResults", [])]).strip()
+        parsed = []
+        for p in result.get("ParsedResults", []):
+            parsed.append(p.get("ParsedText", ""))
+        return "\n".join(parsed).strip()
     except Exception as e:
         st.warning(f"⚠️ OCR error: {e}")
         return ""
 
-# DataFrame summary text
-def df_profile_text(df, name="", sheet_name=None):
-    rows, cols = df.shape
-    dtypes = df.dtypes.astype(str).to_dict()
-    missing = df.isna().sum().to_dict()
-    stats = safe_describe(df).transpose().reset_index().to_string(index=False)
-    sample_csv = df.head(20).to_csv(index=False)
-    return f"SUMMARY {name} {sheet_name}\nshape: {rows}x{cols}\n{dtypes}\nmissing:{missing}\n{stats}\n{sample_csv}"
-
+# CSV / Excel extractors that also store DataFrames in session_state.dataframes
 def extract_text_from_csv(file_bytes, filename):
     try:
         file_bytes.seek(0)
-        df = pd.read_csv(file_bytes)
+        # try read default encoding; fallback latin-1
+        try:
+            df = pd.read_csv(file_bytes)
+        except Exception:
+            file_bytes.seek(0)
+            df = pd.read_csv(file_bytes, encoding="latin-1")
         st.session_state.dataframes[filename] = {"sheets": {"CSV": df}}
-        return df_profile_text(df, name=filename, sheet_name="CSV")
+        return df_to_index_text(df, filename, "CSV")
     except Exception as e:
-        st.warning(f"⚠️ CSV error: {e}")
+        st.warning(f"⚠️ Gagal baca CSV: {e}")
         return ""
 
 def extract_text_from_excel(file_bytes, filename):
-    parts = []
+    text_parts = []
     try:
         file_bytes.seek(0)
         xls = pd.ExcelFile(file_bytes)
-        sheets = {}
+        sheet_map = {}
         for s in xls.sheet_names:
             try:
                 df = xls.parse(s)
-                sheets[s] = df
-                parts.append(df_profile_text(df, name=filename, sheet_name=s))
-            except Exception as e:
-                st.warning(f"⚠️ Sheet {s} gagal: {e}")
-        if sheets:
-            st.session_state.dataframes[filename] = {"sheets": sheets}
-        return "\n\n".join(parts)
+                sheet_map[s] = df
+                text_parts.append(df_to_index_text(df, filename, s))
+            except Exception as se:
+                st.warning(f"⚠️ Gagal parse sheet '{s}' di {filename}: {se}")
+        if sheet_map:
+            st.session_state.dataframes[filename] = {"sheets": sheet_map}
+        return "\n\n---\n\n".join(text_parts)
     except Exception as e:
-        st.warning(f"⚠️ Excel error: {e}")
+        st.warning(f"⚠️ Gagal baca Excel: {e}")
         return ""
 
+def df_to_index_text(df, filename, sheet_name):
+    rows, cols = df.shape
+    stats = safe_describe(df).transpose().reset_index().to_string(index=False)
+    sample = df.head(20).to_csv(index=False)
+    return f"DATAFRAME — file={filename}, sheet={sheet_name}\nshape: {rows}x{cols}\n{stats}\nSAMPLE:\n{sample}"
+
 def extract_text_from_file(uploaded_file):
-    name = uploaded_file.name.lower()
+    name = uploaded_file.name
+    lname = name.lower()
     raw = uploaded_file.read()
     bio = BytesIO(raw)
-    if name.endswith(".pdf"): return extract_text_from_pdf(bio)
-    if name.endswith(".txt"): return extract_text_from_txt(BytesIO(raw))
-    if name.endswith(".docx"): return extract_text_from_docx(BytesIO(raw))
-    if name.endswith(".pptx"): return extract_text_from_pptx(BytesIO(raw))
-    if name.endswith(".csv"): return extract_text_from_csv(BytesIO(raw), uploaded_file.name)
-    if name.endswith((".xlsx",".xls")): return extract_text_from_excel(BytesIO(raw), uploaded_file.name)
-    if name.endswith((".jpg",".jpeg",".png",".gif",".bmp",".jfif")): return extract_text_from_image(BytesIO(raw), uploaded_file.name)
-    st.warning(f"⚠️ Format {name} tidak didukung")
+
+    if lname.endswith(".pdf"):
+        return extract_text_from_pdf(bio)
+    if lname.endswith(".txt"):
+        return extract_text_from_txt(BytesIO(raw))
+    if lname.endswith(".docx"):
+        return extract_text_from_docx(BytesIO(raw))
+    if lname.endswith(".pptx"):
+        return extract_text_from_pptx(BytesIO(raw))
+    if lname.endswith(".csv"):
+        return extract_text_from_csv(BytesIO(raw), name)
+    if lname.endswith((".xlsx", ".xls")):
+        return extract_text_from_excel(BytesIO(raw), name)
+    if lname.endswith((".jpg", ".jpeg", ".png", ".gif", ".bmp", ".jfif")):
+        return extract_text_from_image(BytesIO(raw), filename=name)
+    st.warning(f"⚠️ Format `{name}` tidak didukung.")
     return ""
 
 # -------------------------
-# Build docs & vector store
+# Build documents & FAISS
 # -------------------------
 def build_documents_from_uploads(files):
-    docs=[]
+    docs = []
     for f in files:
-        text=extract_text_from_file(f)
-        if not text: continue
-        for i,ch in enumerate(SPLITTER.split_text(text)):
-            docs.append(Document(page_content=ch, metadata={"source":f.name,"chunk":i}))
+        text = extract_text_from_file(f)
+        if not text or not text.strip():
+            continue
+        chunks = SPLITTER.split_text(text)
+        for i, chunk in enumerate(chunks):
+            docs.append(Document(page_content=chunk, metadata={"source_file": f.name, "chunk_id": i}))
     return docs
 
-def build_faiss(docs):
-    return FAISS.from_documents(docs, embedding=EMBEDDINGS) if docs else None
+def build_faiss_from_documents(docs):
+    if not docs:
+        return None
+    vs = FAISS.from_documents(docs, embedding=EMBEDDINGS)
+    return vs
 
 # -------------------------
-# Auto analysis dataframe
+# Auto-analysis UI per DataFrame
 # -------------------------
-def auto_analyze_dataframe(df, name="", sheet_name=None):
-    st.markdown("#### 🔍 Preview DataFrame")
+def auto_analyze_dataframe(df, filename, sheet_name, show_in_app=True):
+    """
+    Displays:
+      - Head(10), Tail(10)
+      - describe()
+      - info()
+      - correlation (numeric)
+      - trend (if datetime column found)
+      - outliers (IQR)
+      - flexible Top/Bottom-N (select column, N, order)
+      - download Excel & HTML reports
+    """
+    rows, cols = df.shape
 
-    # Head / Tail
-    st.write("**Head (10):**")
-    st.dataframe(df.head(10))
-    st.write("**Tail (10):**")
-    st.dataframe(df.tail(10))
+    # Prepare textual report
+    parts = []
+    parts.append(f"Dataset: {filename} — sheet: {sheet_name}")
+    parts.append(f"Shape: {rows} rows × {cols} cols")
+    parts.append("Dtypes:\n" + df.dtypes.astype(str).to_string())
+    parts.append("Missing counts:\n" + df.isna().sum().to_string())
 
-    # Describe
-    st.write("**describe():**")
-    st.dataframe(safe_describe(df))
+    # Correlation
+    num_df = df.select_dtypes(include="number")
+    if not num_df.empty:
+        parts.append("Correlation matrix:\n" + num_df.corr().to_string())
 
-    # Info
-    import io
-    buf=io.StringIO(); df.info(buf=buf)
-    st.write("**info():**")
-    st.text(buf.getvalue())
+    # Trend (find first date-like column)
+    date_trend_text = ""
+    for col in df.columns:
+        if any(k in col.lower() for k in ["date", "time", "tanggal"]):
+            try:
+                df[col] = pd.to_datetime(df[col])
+                trend = df.groupby(df[col].dt.to_period("M")).size()
+                date_trend_text = f"Trend by {col}:\n{trend.to_string()}"
+                parts.append(date_trend_text)
+                break
+            except Exception:
+                pass
 
-    # Flexible Top/Bottom N
-    st.markdown("----")
-    st.markdown("### Pilih kolom untuk Top/Bottom-N")
-    col=st.selectbox("Kolom:", df.columns, key=f"col_{name}_{sheet_name}")
-    n=st.slider("Jumlah baris:",1,min(100,len(df)),10,key=f"n_{name}_{sheet_name}")
-    order=st.radio("Urutan:",["Top N (descending)","Bottom N (ascending)"],horizontal=True,key=f"ord_{name}_{sheet_name}")
-    if st.button("Tampilkan",key=f"btn_{name}_{sheet_name}"):
+    # Outliers (IQR) for numeric columns
+    outlier_texts = []
+    if not num_df.empty:
+        for c in num_df.columns:
+            q1 = num_df[c].quantile(0.25)
+            q3 = num_df[c].quantile(0.75)
+            iqr = q3 - q1
+            out = num_df[(num_df[c] < q1 - 1.5 * iqr) | (num_df[c] > q3 + 1.5 * iqr)]
+            if not out.empty:
+                outlier_texts.append(f"Outliers for {c}: {len(out)} rows (showing head 20)\n{out.head(20).to_string()}")
+    if outlier_texts:
+        parts.extend(outlier_texts)
+
+    report_text = "\n\n".join(parts)
+
+    # Excel export with multiple sheets
+    out_excel = BytesIO()
+    with pd.ExcelWriter(out_excel, engine="openpyxl") as writer:
         try:
-            if pd.api.types.is_numeric_dtype(df[col]):
-                asc=(order=="Bottom N (ascending)")
-                st.dataframe(df.sort_values(by=col,ascending=asc).head(n))
-            else:
-                vc=df[col].value_counts(ascending=(order=="Bottom N (ascending)")).head(n)
-                st.dataframe(vc.to_frame("count"))
+            df.to_excel(writer, sheet_name="Data", index=False)
+        except Exception:
+            df.reset_index().to_excel(writer, sheet_name="Data", index=False)
+        # write describe & correlation if available
+        try:
+            safe_describe(df).to_excel(writer, sheet_name="Describe")
+        except Exception:
+            pass
+        if not num_df.empty:
+            num_df.corr().to_excel(writer, sheet_name="Correlation")
+    out_excel.seek(0)
+
+    # HTML export (simple, readable)
+    html_body = f"<h2>Analysis — {filename} / {sheet_name}</h2>"
+    html_body += f"<pre>{report_text}</pre>"
+    html_bytes = html_body.encode("utf-8")
+
+    # Display in app
+    if show_in_app:
+        st.markdown(f"### 📄 Analisa: {filename} — {sheet_name}")
+        # Head / Tail
+        st.write("**Head (10):**")
+        st.dataframe(df.head(10))
+        st.write("**Tail (10):**")
+        st.dataframe(df.tail(10))
+
+        # describe()
+        st.write("**describe():**")
+        try:
+            st.dataframe(safe_describe(df))
         except Exception as e:
-            st.warning(f"⚠️ Error: {e}")
+            st.write("describe() error:", e)
 
-    # Download
-    out=BytesIO()
-    with pd.ExcelWriter(out,engine="openpyxl") as w:
-        df.to_excel(w,index=False,sheet_name="Data")
-        safe_describe(df).to_excel(w,sheet_name="Summary")
-    out.seek(0)
-    st.download_button("⬇️ Download Excel",data=out,file_name=f"analysis_{name}_{sheet_name}.xlsx")
+        # info()
+        st.write("**info():**")
+        st.text(df_info_text(df))
+
+        # show correlation heatmap if numeric
+        if not num_df.empty:
+            try:
+                corr = num_df.corr()
+                st.write("**Correlation matrix:**")
+                st.dataframe(corr)
+                fig, ax = plt.subplots()
+                cax = ax.matshow(corr)
+                fig.colorbar(cax)
+                ax.set_xticks(range(len(corr.columns)))
+                ax.set_xticklabels(corr.columns, rotation=90)
+                ax.set_yticks(range(len(corr.columns)))
+                ax.set_yticklabels(corr.columns)
+                st.pyplot(fig)
+            except Exception:
+                pass
+
+        # automatic Top10 for Sales/Profit if present (backward compat)
+        for cand in ["sales", "profit"]:
+            for col in df.columns:
+                if col.lower() == cand:
+                    try:
+                        st.markdown(f"**Top 10 berdasarkan {col} (descending):**")
+                        st.dataframe(df.sort_values(by=col, ascending=False).head(10))
+                    except Exception:
+                        pass
+
+        # Flexible Top/Bottom-N UI
+        st.markdown("---")
+        st.markdown("### Pilih kolom untuk Top/Bottom-N (flexible)")
+        col_list = list(df.columns)
+        if col_list:
+            widget_prefix = f"{filename}___{sheet_name}"
+            chosen_col = st.selectbox("Pilih kolom:", options=col_list, key=f"col_{widget_prefix}")
+            max_n = min(100, max(1, len(df)))
+            chosen_n = st.slider("Jumlah baris (N):", min_value=1, max_value=max_n, value=min(10, max_n), key=f"n_{widget_prefix}")
+            sort_order = st.radio("Urutan:", ["Top N (descending)", "Bottom N (ascending)"], index=0, key=f"ord_{widget_prefix}", horizontal=True)
+            if st.button("Tampilkan Top/Bottom N", key=f"btn_{widget_prefix}"):
+                try:
+                    if pd.api.types.is_numeric_dtype(df[chosen_col]):
+                        asc = (sort_order == "Bottom N (ascending)")
+                        topn = df.sort_values(by=chosen_col, ascending=asc).head(chosen_n)
+                        st.markdown(f"**{sort_order} berdasarkan {chosen_col}:**")
+                        st.dataframe(topn)
+                    else:
+                        # for non-numeric show top value_counts or bottom (least frequent)
+                        if sort_order == "Top N (descending)":
+                            vc = df[chosen_col].value_counts().head(chosen_n)
+                        else:
+                            vc = df[chosen_col].value_counts(ascending=True).head(chosen_n)
+                        st.markdown(f"**{sort_order} nilai kolom {chosen_col}:**")
+                        st.dataframe(vc.to_frame(name="count"))
+                        st.markdown("Sample rows for these values:")
+                        sample_vals = vc.index.tolist()
+                        st.dataframe(df[df[chosen_col].isin(sample_vals)].head(200))
+                except Exception as e:
+                    st.warning(f"⚠️ Gagal menampilkan Top/Bottom-N: {e}")
+
+    # Download buttons
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            label="⬇️ Download laporan Excel",
+            data=out_excel,
+            file_name=f"analysis_{filename}_{sheet_name}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    with c2:
+        st.download_button(
+            label="⬇️ Download laporan HTML",
+            data=html_bytes,
+            file_name=f"analysis_{filename}_{sheet_name}.html",
+            mime="text/html"
+        )
 
 # -------------------------
-# UI
+# Handle upload parsing (store DataFrames & indexable text)
 # -------------------------
-st.title("🤖 Multi-file Chatbot + Auto Analysis")
+st.title("🤖 Multi-file Chatbot + Auto Analysis (final)")
 
-uploaded=st.sidebar.file_uploader("Upload files",type=["pdf","txt","docx","pptx","csv","xls","xlsx","jpg","jpeg","png","gif","bmp","jfif"],accept_multiple_files=True)
-build_btn=st.sidebar.button("🚀 Build Vector Store")
-clear_btn=st.sidebar.button("🧹 Reset")
+if uploaded_files:
+    st.sidebar.info(f"{len(uploaded_files)} file dipilih — klik 'Build Vector Store' untuk indexing")
+    # parse uploaded files immediately to fill session_state.dataframes (but do not build vectors until button)
+    for f in uploaded_files:
+        # only parse if not already parsed (prevents duplicate parsing)
+        if f.name not in st.session_state.dataframes:
+            try:
+                extract_text_from_file(f)
+                st.sidebar.success(f"Parsed: {f.name}")
+            except Exception as e:
+                st.sidebar.warning(f"Failed parse {f.name}: {e}")
 
-if "vs" not in st.session_state: st.session_state.vs=None
-if "dfs" not in st.session_state: st.session_state.dfs={}
-
-if clear_btn:
-    st.session_state.vs=None; st.session_state.dfs={}
-    st.success("Reset done")
-
-if build_btn and uploaded:
-    with st.spinner("Building vector store..."):
-        docs=build_documents_from_uploads(uploaded)
-        st.session_state.vs=build_faiss(docs)
-        st.success(f"Indexed {len(docs)} chunks")
-
-if st.session_state.dfs:
-    st.subheader("📊 Data Analysis")
-    for fname,payload in st.session_state.dfs.items():
-        with st.expander(fname):
-            for sheet,df in payload["sheets"].items():
-                st.markdown(f"**Sheet: {sheet}**")
-                auto_analyze_dataframe(df,fname,sheet)
-
-# Query
-st.subheader("💬 Pertanyaan")
-q=st.text_input("Tanya berdasarkan dokumen:")
-if st.button("Tanyakan"):
-    if not q.strip():
-        st.warning("Isi pertanyaan dulu")
-    elif not st.session_state.vs:
-        st.info("Vector store belum ada")
+# Build vector store action
+if build_btn:
+    if not uploaded_files:
+        st.sidebar.warning("Silakan upload minimal 1 file sebelum membangun vector store.")
     else:
-        res=st.session_state.vs.similarity_search(q,k=5)
-        ctx="\n".join([d.page_content for d in res])
-        prompt=f"Jawab berdasarkan konteks:\n{ctx}\n\nPertanyaan:{q}\nJawaban:"
+        with st.spinner("📦 Memproses file dan membangun vector store..."):
+            docs = build_documents_from_uploads(uploaded_files)
+            if not docs:
+                st.sidebar.error("Tidak ada teks valid berhasil diekstrak. Periksa file.")
+            else:
+                vs = build_faiss_from_documents(docs)
+                st.session_state.vector_store = vs
+                st.session_state.indexed_files = [f.name for f in uploaded_files]
+                st.sidebar.success(f"Vector store terbangun. Dokumen terindeks: {len(st.session_state.indexed_files)} | Chunks: {len(docs)}")
+
+# Reset action
+if clear_btn:
+    st.session_state.vector_store = None
+    st.session_state.indexed_files = []
+    st.session_state.dataframes = {}
+    st.sidebar.success("Session state direset.")
+
+# Show indexed files or hint
+if st.session_state.indexed_files:
+    st.markdown("**Dokumen terindeks:**")
+    st.write(" • " + "\n • ".join(st.session_state.indexed_files))
+else:
+    st.info("Belum ada dokumen terindeks. Upload file lalu klik 'Build Vector Store' bila ingin pakai fitur tanya jawab LLM.")
+
+# Data preview & analysis area
+if st.session_state.dataframes:
+    st.subheader("📊 Data Preview, Profiling & Analisa Otomatis")
+    show_in_app = st.checkbox("Tampilkan analisa di Streamlit (per sheet)", value=True)
+    for fname, payload in st.session_state.dataframes.items():
+        with st.expander(f"🔎 File: {fname}", expanded=False):
+            for sheet_name, df in payload["sheets"].items():
+                auto_analyze_dataframe(df, fname, sheet_name, show_in_app)
+
+# -------------------------
+# Query area (always visible)
+# -------------------------
+st.subheader("💬 Ajukan Pertanyaan")
+prompt = st.text_input("Tanyakan sesuatu berdasarkan dokumen/tabel yang diupload:",
+                       placeholder="Misal: Ringkas tren penjualan per wilayah 2024")
+ask_btn = st.button("Tanyakan")
+
+if ask_btn:
+    if not prompt.strip():
+        st.warning("Masukkan pertanyaan terlebih dahulu.")
+    elif st.session_state.vector_store is None:
+        st.info("Belum ada vector store. Upload file dan klik 'Build Vector Store' jika ingin jawaban berbasis dokumen.")
+    else:
+        with st.spinner("🔎 Mengambil konteks dari vector store..."):
+            results = st.session_state.vector_store.similarity_search(prompt, k=5)
+        context_text = "\n\n".join([d.page_content for d in results])
+        composed_prompt = (
+            "Jawablah seakurat mungkin berdasarkan konteks berikut.\n\n"
+            f"=== KONTEX ===\n{context_text}\n\n"
+            f"=== PERTANYAAN ===\n{prompt}\n\n"
+            f"=== JAWABAN ==="
+        )
+
         try:
-            if st.sidebar.radio("LLM:",["Gemini","Groq"],horizontal=True)=="Gemini":
+            if llm_choice.startswith("Gemini"):
                 from langchain_google_genai import ChatGoogleGenerativeAI
-                llm=ChatGoogleGenerativeAI(model="gemini-2.5-flash",temperature=0.2)
-                ans=llm.invoke(prompt)
+                llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
+                with st.spinner("🤖 Gemini sedang menjawab..."):
+                    response = llm.invoke(composed_prompt)
             else:
                 from langchain_groq import ChatGroq
-                llm=ChatGroq(model_name="llama-3.3-70b-versatile",groq_api_key=GROQ_API_KEY,temperature=0.2)
-                ans=llm.invoke(prompt)
-            st.write(getattr(ans,"content",str(ans)))
+                llm = ChatGroq(
+                    temperature=0.2,
+                    groq_api_key=GROQ_API_KEY,
+                    model_name="llama-3.3-70b-versatile"
+                )
+                with st.spinner("⚡ Groq sedang menjawab..."):
+                    response = llm.invoke(composed_prompt)
+
+            st.subheader("💬 Jawaban")
+            out_text = getattr(response, "content", None) or str(response)
+            st.write(out_text)
+
         except Exception as e:
-            st.error(str(e))
+            st.error(f"❌ Error saat memanggil LLM: {e}")
