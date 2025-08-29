@@ -12,6 +12,7 @@ Pillow
 langchain-groq
 requests
 xlrd==1.2.0   # untuk .xls (versi baru xlrd drop dukungan xlsx)
-pandas>=1.0
 openpyxl
+pandas>=1.0
 matplotlib
+seaborn
