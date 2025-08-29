@@ -5,6 +5,7 @@ import streamlit as st
 from dotenv import load_dotenv
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Document parsing
 from PyPDF2 import PdfReader
@@ -28,17 +29,17 @@ OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY")
 st.set_page_config(page_title="Chatbot + Auto Analysis", page_icon="🤖", layout="wide")
 
 # -------------------------
-# Session state init (fix bug)
+# Session state init
 # -------------------------
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 if "indexed_files" not in st.session_state:
     st.session_state.indexed_files = []
 if "dataframes" not in st.session_state:
-    st.session_state.dataframes = {}  # { filename: { "sheets": {sheet_name: df, ...} }, ... }
+    st.session_state.dataframes = {}
 
 # -------------------------
-# Sidebar: Upload + LLM choice + Actions
+# Sidebar
 # -------------------------
 st.sidebar.header("📂 Upload & Build")
 uploaded_files = st.sidebar.file_uploader(
@@ -63,7 +64,7 @@ EMBEDDINGS = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-
 SPLITTER = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120)
 
 # -------------------------
-# Helpers / compatibility
+# Helpers
 # -------------------------
 def safe_describe(df):
     try:
@@ -147,16 +148,11 @@ def extract_text_from_image(file_bytes, filename="upload.png"):
         st.warning(f"⚠️ OCR error: {e}")
         return ""
 
-# CSV / Excel extractors that also store DataFrames in session_state.dataframes
+# CSV / Excel
 def extract_text_from_csv(file_bytes, filename):
     try:
         file_bytes.seek(0)
-        # try read default encoding; fallback latin-1
-        try:
-            df = pd.read_csv(file_bytes)
-        except Exception:
-            file_bytes.seek(0)
-            df = pd.read_csv(file_bytes, encoding="latin-1")
+        df = pd.read_csv(file_bytes)
         st.session_state.dataframes[filename] = {"sheets": {"CSV": df}}
         return df_to_index_text(df, filename, "CSV")
     except Exception as e:
@@ -233,276 +229,137 @@ def build_faiss_from_documents(docs):
     return vs
 
 # -------------------------
-# Auto-analysis UI per DataFrame
+# Auto-analysis
 # -------------------------
 def auto_analyze_dataframe(df, filename, sheet_name, show_in_app=True):
-    """
-    Displays:
-      - Head(10), Tail(10)
-      - describe()
-      - info()
-      - correlation (numeric)
-      - trend (if datetime column found)
-      - outliers (IQR)
-      - flexible Top/Bottom-N (select column, N, order)
-      - download Excel & HTML reports
-    """
-    rows, cols = df.shape
-
-    # Prepare textual report
-    parts = []
-    parts.append(f"Dataset: {filename} — sheet: {sheet_name}")
-    parts.append(f"Shape: {rows} rows × {cols} cols")
-    parts.append("Dtypes:\n" + df.dtypes.astype(str).to_string())
-    parts.append("Missing counts:\n" + df.isna().sum().to_string())
-
-    # Correlation
     num_df = df.select_dtypes(include="number")
-    if not num_df.empty:
-        parts.append("Correlation matrix:\n" + num_df.corr().to_string())
 
-    # Trend (find first date-like column)
-    date_trend_text = ""
-    for col in df.columns:
-        if any(k in col.lower() for k in ["date", "time", "tanggal"]):
-            try:
-                df[col] = pd.to_datetime(df[col])
-                trend = df.groupby(df[col].dt.to_period("M")).size()
-                date_trend_text = f"Trend by {col}:\n{trend.to_string()}"
-                parts.append(date_trend_text)
-                break
-            except Exception:
-                pass
-
-    # Outliers (IQR) for numeric columns
-    outlier_texts = []
-    if not num_df.empty:
-        for c in num_df.columns:
-            q1 = num_df[c].quantile(0.25)
-            q3 = num_df[c].quantile(0.75)
-            iqr = q3 - q1
-            out = num_df[(num_df[c] < q1 - 1.5 * iqr) | (num_df[c] > q3 + 1.5 * iqr)]
-            if not out.empty:
-                outlier_texts.append(f"Outliers for {c}: {len(out)} rows (showing head 20)\n{out.head(20).to_string()}")
-    if outlier_texts:
-        parts.extend(outlier_texts)
-
-    report_text = "\n\n".join(parts)
-
-    # Excel export with multiple sheets
+    # Export Excel
     out_excel = BytesIO()
     with pd.ExcelWriter(out_excel, engine="openpyxl") as writer:
-        try:
-            df.to_excel(writer, sheet_name="Data", index=False)
-        except Exception:
-            df.reset_index().to_excel(writer, sheet_name="Data", index=False)
-        # write describe & correlation if available
+        df.to_excel(writer, sheet_name="Data", index=False)
         try:
             safe_describe(df).to_excel(writer, sheet_name="Describe")
-        except Exception:
+        except:
             pass
         if not num_df.empty:
             num_df.corr().to_excel(writer, sheet_name="Correlation")
     out_excel.seek(0)
 
-    # HTML export (simple, readable)
-    html_body = f"<h2>Analysis — {filename} / {sheet_name}</h2>"
-    html_body += f"<pre>{report_text}</pre>"
-    html_bytes = html_body.encode("utf-8")
+    # Export HTML
+    html_report = f"<h2>Analysis — {filename}/{sheet_name}</h2><pre>{df.head(20).to_string()}</pre>"
+    html_bytes = html_report.encode("utf-8")
 
-    # Display in app
     if show_in_app:
         st.markdown(f"### 📄 Analisa: {filename} — {sheet_name}")
-        # Head / Tail
         st.write("**Head (10):**")
         st.dataframe(df.head(10))
         st.write("**Tail (10):**")
         st.dataframe(df.tail(10))
 
-        # describe()
         st.write("**describe():**")
-        try:
-            st.dataframe(safe_describe(df))
-        except Exception as e:
-            st.write("describe() error:", e)
+        st.dataframe(safe_describe(df))
 
-        # info()
         st.write("**info():**")
         st.text(df_info_text(df))
 
-        # show correlation heatmap if numeric
-        if not num_df.empty:
-            try:
-                corr = num_df.corr()
-                st.write("**Correlation matrix:**")
-                st.dataframe(corr)
-                fig, ax = plt.subplots()
-                cax = ax.matshow(corr)
-                fig.colorbar(cax)
-                ax.set_xticks(range(len(corr.columns)))
-                ax.set_xticklabels(corr.columns, rotation=90)
-                ax.set_yticks(range(len(corr.columns)))
-                ax.set_yticklabels(corr.columns)
+        # Outlier Detection (Boxplot) untuk Sales, Quantity, Profit
+        target_cols = [c for c in ["Sales", "Quantity", "Profit"] if c in df.columns]
+        if target_cols:
+            st.write("**Outlier Detection (Boxplot):**")
+            for col in target_cols:
+                fig, ax = plt.subplots(figsize=(5, 3))
+                sns.boxplot(x=df[col], ax=ax)
+                ax.set_title(f"Outliers — {col}")
                 st.pyplot(fig)
-            except Exception:
-                pass
 
-        # automatic Top10 for Sales/Profit if present (backward compat)
-        for cand in ["sales", "profit"]:
-            for col in df.columns:
-                if col.lower() == cand:
-                    try:
-                        st.markdown(f"**Top 10 berdasarkan {col} (descending):**")
-                        st.dataframe(df.sort_values(by=col, ascending=False).head(10))
-                    except Exception:
-                        pass
+        # Correlation heatmap
+        if not num_df.empty:
+            corr = num_df.corr()
+            st.write("**Correlation matrix:**")
+            st.dataframe(corr)
+            fig, ax = plt.subplots(figsize=(5, 3))
+            sns.heatmap(corr, annot=True, cmap="coolwarm", ax=ax)
+            st.pyplot(fig)
 
-        # Flexible Top/Bottom-N UI
+        # Flexible Top/Bottom-N
         st.markdown("---")
-        st.markdown("### Pilih kolom untuk Top/Bottom-N (flexible)")
+        st.markdown("### Pilih kolom untuk Top/Bottom-N")
         col_list = list(df.columns)
         if col_list:
             widget_prefix = f"{filename}___{sheet_name}"
             chosen_col = st.selectbox("Pilih kolom:", options=col_list, key=f"col_{widget_prefix}")
-            max_n = min(100, max(1, len(df)))
-            chosen_n = st.slider("Jumlah baris (N):", min_value=1, max_value=max_n, value=min(10, max_n), key=f"n_{widget_prefix}")
-            sort_order = st.radio("Urutan:", ["Top N (descending)", "Bottom N (ascending)"], index=0, key=f"ord_{widget_prefix}", horizontal=True)
-            if st.button("Tampilkan Top/Bottom N", key=f"btn_{widget_prefix}"):
-                try:
-                    if pd.api.types.is_numeric_dtype(df[chosen_col]):
-                        asc = (sort_order == "Bottom N (ascending)")
-                        topn = df.sort_values(by=chosen_col, ascending=asc).head(chosen_n)
-                        st.markdown(f"**{sort_order} berdasarkan {chosen_col}:**")
-                        st.dataframe(topn)
-                    else:
-                        # for non-numeric show top value_counts or bottom (least frequent)
-                        if sort_order == "Top N (descending)":
-                            vc = df[chosen_col].value_counts().head(chosen_n)
-                        else:
-                            vc = df[chosen_col].value_counts(ascending=True).head(chosen_n)
-                        st.markdown(f"**{sort_order} nilai kolom {chosen_col}:**")
-                        st.dataframe(vc.to_frame(name="count"))
-                        st.markdown("Sample rows for these values:")
-                        sample_vals = vc.index.tolist()
-                        st.dataframe(df[df[chosen_col].isin(sample_vals)].head(200))
-                except Exception as e:
-                    st.warning(f"⚠️ Gagal menampilkan Top/Bottom-N: {e}")
+            max_n = min(100, len(df))
+            chosen_n = st.slider("Jumlah baris (N):", 1, max_n, 10, key=f"n_{widget_prefix}")
+            order = st.radio("Urutan:", ["Top N (descending)", "Bottom N (ascending)"], key=f"ord_{widget_prefix}", horizontal=True)
+            if st.button("Tampilkan", key=f"btn_{widget_prefix}"):
+                if pd.api.types.is_numeric_dtype(df[chosen_col]):
+                    asc = (order == "Bottom N (ascending)")
+                    st.dataframe(df.sort_values(by=chosen_col, ascending=asc).head(chosen_n))
+                else:
+                    vc = df[chosen_col].value_counts(ascending=(order=="Bottom N (ascending)")).head(chosen_n)
+                    st.dataframe(vc.to_frame("count"))
 
     # Download buttons
     c1, c2 = st.columns(2)
     with c1:
-        st.download_button(
-            label="⬇️ Download laporan Excel",
-            data=out_excel,
-            file_name=f"analysis_{filename}_{sheet_name}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        st.download_button("⬇️ Download Excel", out_excel, f"analysis_{filename}_{sheet_name}.xlsx")
     with c2:
-        st.download_button(
-            label="⬇️ Download laporan HTML",
-            data=html_bytes,
-            file_name=f"analysis_{filename}_{sheet_name}.html",
-            mime="text/html"
-        )
+        st.download_button("⬇️ Download HTML", html_bytes, f"analysis_{filename}_{sheet_name}.html", mime="text/html")
 
 # -------------------------
-# Handle upload parsing (store DataFrames & indexable text)
+# Main
 # -------------------------
 st.title("🤖 Multi-file Chatbot + Auto Analysis (final)")
 
 if uploaded_files:
-    st.sidebar.info(f"{len(uploaded_files)} file dipilih — klik 'Build Vector Store' untuk indexing")
-    # parse uploaded files immediately to fill session_state.dataframes (but do not build vectors until button)
     for f in uploaded_files:
-        # only parse if not already parsed (prevents duplicate parsing)
         if f.name not in st.session_state.dataframes:
-            try:
-                extract_text_from_file(f)
-                st.sidebar.success(f"Parsed: {f.name}")
-            except Exception as e:
-                st.sidebar.warning(f"Failed parse {f.name}: {e}")
+            extract_text_from_file(f)
 
-# Build vector store action
-if build_btn:
-    if not uploaded_files:
-        st.sidebar.warning("Silakan upload minimal 1 file sebelum membangun vector store.")
-    else:
-        with st.spinner("📦 Memproses file dan membangun vector store..."):
-            docs = build_documents_from_uploads(uploaded_files)
-            if not docs:
-                st.sidebar.error("Tidak ada teks valid berhasil diekstrak. Periksa file.")
-            else:
-                vs = build_faiss_from_documents(docs)
-                st.session_state.vector_store = vs
-                st.session_state.indexed_files = [f.name for f in uploaded_files]
-                st.sidebar.success(f"Vector store terbangun. Dokumen terindeks: {len(st.session_state.indexed_files)} | Chunks: {len(docs)}")
+if build_btn and uploaded_files:
+    with st.spinner("Membangun vector store..."):
+        docs = build_documents_from_uploads(uploaded_files)
+        st.session_state.vector_store = build_faiss_from_documents(docs)
+        st.session_state.indexed_files = [f.name for f in uploaded_files]
+        st.success(f"Vector store terbangun ({len(docs)} chunks).")
 
-# Reset action
 if clear_btn:
     st.session_state.vector_store = None
     st.session_state.indexed_files = []
     st.session_state.dataframes = {}
-    st.sidebar.success("Session state direset.")
+    st.sidebar.success("Reset selesai.")
 
-# Show indexed files or hint
-if st.session_state.indexed_files:
-    st.markdown("**Dokumen terindeks:**")
-    st.write(" • " + "\n • ".join(st.session_state.indexed_files))
-else:
-    st.info("Belum ada dokumen terindeks. Upload file lalu klik 'Build Vector Store' bila ingin pakai fitur tanya jawab LLM.")
-
-# Data preview & analysis area
+# Analysis
 if st.session_state.dataframes:
-    st.subheader("📊 Data Preview, Profiling & Analisa Otomatis")
-    show_in_app = st.checkbox("Tampilkan analisa di Streamlit (per sheet)", value=True)
+    st.subheader("📊 Data Preview & Analisa")
+    show_in_app = st.checkbox("Tampilkan analisa di Streamlit", True)
     for fname, payload in st.session_state.dataframes.items():
-        with st.expander(f"🔎 File: {fname}", expanded=False):
-            for sheet_name, df in payload["sheets"].items():
-                auto_analyze_dataframe(df, fname, sheet_name, show_in_app)
+        with st.expander(f"File: {fname}", expanded=False):
+            for sheet, df in payload["sheets"].items():
+                auto_analyze_dataframe(df, fname, sheet, show_in_app)
 
-# -------------------------
-# Query area (always visible)
-# -------------------------
+# Query
 st.subheader("💬 Ajukan Pertanyaan")
-prompt = st.text_input("Tanyakan sesuatu berdasarkan dokumen/tabel yang diupload:",
-                       placeholder="Misal: Ringkas tren penjualan per wilayah 2024")
-ask_btn = st.button("Tanyakan")
-
-if ask_btn:
+prompt = st.text_input("Pertanyaan berdasarkan dokumen:")
+if st.button("Tanyakan"):
     if not prompt.strip():
-        st.warning("Masukkan pertanyaan terlebih dahulu.")
+        st.warning("Masukkan pertanyaan dulu")
     elif st.session_state.vector_store is None:
-        st.info("Belum ada vector store. Upload file dan klik 'Build Vector Store' jika ingin jawaban berbasis dokumen.")
+        st.info("Belum ada vector store. Upload file & klik Build Vector Store.")
     else:
-        with st.spinner("🔎 Mengambil konteks dari vector store..."):
-            results = st.session_state.vector_store.similarity_search(prompt, k=5)
-        context_text = "\n\n".join([d.page_content for d in results])
-        composed_prompt = (
-            "Jawablah seakurat mungkin berdasarkan konteks berikut.\n\n"
-            f"=== KONTEX ===\n{context_text}\n\n"
-            f"=== PERTANYAAN ===\n{prompt}\n\n"
-            f"=== JAWABAN ==="
-        )
-
+        results = st.session_state.vector_store.similarity_search(prompt, k=5)
+        ctx = "\n\n".join([d.page_content for d in results])
+        q_prompt = f"Jawablah berdasarkan konteks berikut:\n{ctx}\n\nPertanyaan: {prompt}\nJawaban:"
         try:
             if llm_choice.startswith("Gemini"):
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
-                with st.spinner("🤖 Gemini sedang menjawab..."):
-                    response = llm.invoke(composed_prompt)
+                response = llm.invoke(q_prompt)
             else:
                 from langchain_groq import ChatGroq
-                llm = ChatGroq(
-                    temperature=0.2,
-                    groq_api_key=GROQ_API_KEY,
-                    model_name="llama-3.3-70b-versatile"
-                )
-                with st.spinner("⚡ Groq sedang menjawab..."):
-                    response = llm.invoke(composed_prompt)
-
-            st.subheader("💬 Jawaban")
-            out_text = getattr(response, "content", None) or str(response)
-            st.write(out_text)
-
+                llm = ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY, temperature=0.2)
+                response = llm.invoke(q_prompt)
+            st.write(getattr(response, "content", str(response)))
         except Exception as e:
-            st.error(f"❌ Error saat memanggil LLM: {e}")
+            st.error(f"LLM error: {e}")
