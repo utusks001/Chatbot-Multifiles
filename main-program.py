@@ -3,7 +3,6 @@ from io import BytesIO
 import requests
 import streamlit as st
 from dotenv import load_dotenv
-import base64
 
 # File parsing
 from PyPDF2 import PdfReader
@@ -28,18 +27,28 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY")
 
 st.set_page_config(
-    page_title="Gemini + Groq Multi-file Chatbot",
+    page_title="Gemini + Groq Multi-file Chatbot (Flexible Top-N)",
     page_icon="🤖",
     layout="wide"
 )
 
 if not (GOOGLE_API_KEY or GROQ_API_KEY):
-    st.error("❌ GOOGLE_API_KEY atau GROQ_API_KEY tidak ditemukan. Tambahkan ke file .env sebelum menjalankan.")
+    st.error("❌ GOOGLE_API_KEY atau GROQ_API_KEY tidak ditemukan di .env. Tambahkan setidaknya salah satu sebelum menjalankan.")
     st.stop()
 
 # Embeddings & splitter
 EMBEDDINGS = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 SPLITTER = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120)
+
+# -------------------------
+# Utility / compatibility
+# -------------------------
+def safe_describe(df):
+    """Fallback describe untuk semua versi pandas"""
+    try:
+        return df.describe(include="all", datetime_is_numeric=True)
+    except TypeError:
+        return df.describe(include="all")
 
 # -------------------------
 # File extractors
@@ -98,33 +107,27 @@ def extract_text_from_image(file_bytes, filename="upload.png"):
             "https://api.ocr.space/parse/image",
             files={"file": (filename, file_bytes, "image/png")},
             data={"apikey": OCR_SPACE_API_KEY, "language": "eng"},
+            timeout=60
         )
         result = response.json()
         if result.get("IsErroredOnProcessing"):
             st.warning("⚠️ OCR.Space gagal: " + str(result.get("ErrorMessage", ["Unknown error"])))
             return ""
-        text = "\n".join([p["ParsedText"] for p in result.get("ParsedResults", []) if "ParsedText" in p])
+        text = "\n".join([p.get("ParsedText","") for p in result.get("ParsedResults", [])])
         return text.strip()
     except Exception as e:
         st.warning(f"⚠️ OCR.Space error: {e}")
         return ""
 
 # -------------------------
-# DataFrame helpers
+# DataFrame helpers (profiling -> text for indexing)
 # -------------------------
-def safe_describe(df):
-    """Fallback describe untuk semua versi pandas"""
-    try:
-        return df.describe(include="all", datetime_is_numeric=True)
-    except TypeError:
-        return df.describe(include="all")
-
 def df_profile_text(df, name="", sheet_name=None):
     rows, cols = df.shape
     dtypes = df.dtypes.astype(str).to_dict()
     missing = df.isna().sum().to_dict()
     stats = safe_describe(df).transpose().reset_index().to_string(index=False)
-    sample_csv = df.head(50).to_csv(index=False)
+    sample_csv = df.head(20).to_csv(index=False)
 
     header = f"DATAFRAME SUMMARY — file={name}" + (f", sheet={sheet_name}" if sheet_name else "")
     block = [
@@ -134,7 +137,7 @@ def df_profile_text(df, name="", sheet_name=None):
         f"missing_counts: {missing}",
         "describe():",
         stats,
-        "sample(head):",
+        "sample(head 20):",
         sample_csv
     ]
     return "\n".join([str(x) for x in block if x is not None])
@@ -217,23 +220,27 @@ def build_faiss_from_documents(docs):
     return vs
 
 # -------------------------
-# Auto Analysis for DataFrame
+# Auto Analysis for DataFrame (dengan Top-N fleksibel)
 # -------------------------
 def auto_analyze_dataframe(df, name="", sheet_name=None, show_in_app=True):
+    """
+    Menampilkan ringkasan & menyediakan dropdown untuk memilih kolom apa yang
+    ingin ditampilkan Top-N (descending). Juga membuat file export.
+    """
     report_str = []
     rows, cols = df.shape
 
-    # Summary
+    # Basic summary text
     report_str.append(f"Dataset shape: {rows} rows × {cols} cols")
     report_str.append("Tipe data:\n" + str(df.dtypes.astype(str)))
     report_str.append("Missing values:\n" + str(df.isna().sum()))
     
-    # Correlation
+    # Correlation (numerical)
     num_cols = df.select_dtypes(include="number")
     if not num_cols.empty:
         report_str.append("Correlation matrix:\n" + str(num_cols.corr()))
     
-    # Trend waktu
+    # Trend waktu (cari column yang mengandung date/time/tanggal)
     for col in df.columns:
         if any(x in col.lower() for x in ["date", "time", "tanggal"]):
             try:
@@ -244,7 +251,7 @@ def auto_analyze_dataframe(df, name="", sheet_name=None, show_in_app=True):
             except Exception:
                 pass
 
-    # Outliers
+    # Outliers (IQR) for numeric cols
     if not num_cols.empty:
         for c in num_cols.columns:
             q1 = num_cols[c].quantile(0.25)
@@ -256,23 +263,74 @@ def auto_analyze_dataframe(df, name="", sheet_name=None, show_in_app=True):
 
     report_text = "\n\n".join(report_str)
 
-    # Export Excel
+    # Prepare Excel export (Data + Summary + Correlation)
     output_excel = BytesIO()
     with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Data")
+        try:
+            df.to_excel(writer, index=False, sheet_name="Data")
+        except Exception:
+            # fallback jika nama sheet bermasalah
+            df.reset_index().to_excel(writer, index=False, sheet_name="Data")
         safe_describe(df).to_excel(writer, sheet_name="Summary")
         if not num_cols.empty:
             num_cols.corr().to_excel(writer, sheet_name="Correlation")
     output_excel.seek(0)
 
-    # Export HTML (simple)
+    # Simple HTML export
     output_html = f"<html><body><pre>{report_text}</pre></body></html>".encode("utf-8")
 
-    # UI
+    # UI display
     if show_in_app:
-        st.write("**Preview data:**")
-        st.dataframe(df.head())
-        st.write(report_text)
+        st.write("**Preview data (head 10):**")
+        st.dataframe(df.head(10))
+
+        st.write("**Ringkasan analisa otomatis:**")
+        st.text(report_text)
+
+        # Automatic top-10 for common columns (Sales/Profit) for backward compatibility
+        for candidate in ["sales", "profit"]:
+            for col in df.columns:
+                if col.lower() == candidate:
+                    try:
+                        top10 = df.sort_values(by=col, ascending=False).head(10)
+                        st.markdown(f"**Top 10 berdasarkan {col} (descending):**")
+                        st.dataframe(top10)
+                    except Exception:
+                        pass
+
+        # ========== FLEXIBLE TOP-N UI ==========
+        # Build widget keys unique per file+sheet
+        widget_col_key = f"topcol_{name}_{sheet_name}"
+        widget_n_key = f"topn_{name}_{sheet_name}"
+        widget_btn_key = f"topbtn_{name}_{sheet_name}"
+
+        cols_for_dropdown = list(df.columns)
+        if cols_for_dropdown:
+            st.markdown("----")
+            st.markdown("### Pilih kolom untuk melihat Top-N (descending)")
+            chosen_col = st.selectbox("Pilih kolom:", options=cols_for_dropdown, key=widget_col_key)
+            max_n = min(100, max(1, len(df)))
+            chosen_n = st.slider("Jumlah baris (N):", min_value=1, max_value=max_n, value=min(10, max_n), key=widget_n_key)
+            if st.button("Tampilkan Top-N", key=widget_btn_key):
+                try:
+                    # Prioritaskan sorting numeric desc; if column non-numeric then show top value_counts
+                    if pd.api.types.is_numeric_dtype(df[chosen_col]):
+                        topn_df = df.sort_values(by=chosen_col, ascending=False).head(chosen_n)
+                        st.markdown(f"**Top {chosen_n} berdasarkan {chosen_col} (numeric, descending):**")
+                        st.dataframe(topn_df)
+                    else:
+                        # for non-numeric, show top frequent rows by value_counts on the column,
+                        # then show those rows from original df (head per value)
+                        vc = df[chosen_col].value_counts().head(chosen_n)
+                        st.markdown(f"**Top {chosen_n} nilai terbanyak di kolom {chosen_col}:**")
+                        st.dataframe(vc.to_frame(name="count"))
+                        # optionally show sample rows for top values
+                        top_values = vc.index.tolist()
+                        sample_rows = df[df[chosen_col].isin(top_values)].head(50)
+                        st.markdown(f"**Sample rows for top values of {chosen_col}:**")
+                        st.dataframe(sample_rows)
+                except Exception as e:
+                    st.warning(f"⚠️ Gagal menampilkan Top-N untuk kolom {chosen_col}: {e}")
 
     # Download buttons
     col1, col2 = st.columns(2)
@@ -292,20 +350,26 @@ def auto_analyze_dataframe(df, name="", sheet_name=None, show_in_app=True):
         )
 
 # -------------------------
-# Streamlit UI
+# Streamlit UI main
 # -------------------------
-st.title("🤖 Gemini 2.5 Flash + Groq — Multi-files + Analisa Data Otomatis")
-st.write("Upload file (PDF, TXT, DOCX, PPTX, Images, CSV, XLS, XLSX). Data Excel/CSV akan dianalisa otomatis & bisa diexport.")
+st.title("🤖 Gemini + Groq — Multi-file + Auto-Analysis + Flexible Top-N")
+st.write("Upload file (PDF, TXT, DOCX, PPTX, Images, CSV, XLS, XLSX). Data tabular dianalisa otomatis. Pilih kolom mana yang ingin dilihat Top-N.")
 
-# Sidebar
+# Sidebar: upload & build & LLM choice
 st.sidebar.header("📂 Upload & Build")
 uploaded_files = st.sidebar.file_uploader(
-    "Upload files",
+    "Upload files (boleh banyak)",
     type=["pdf", "txt", "docx", "pptx", "jpg", "jpeg", "png", "gif", "bmp", "jfif", "csv", "xls", "xlsx"],
     accept_multiple_files=True
 )
 build_btn = st.sidebar.button("🚀 Build Vector Store")
-clear_btn = st.sidebar.button("🧹 Reset vector store")
+clear_btn = st.sidebar.button("🧹 Reset Semua")
+
+llm_choice = st.sidebar.radio(
+    "Pilih LLM Provider:",
+    ["Gemini 2.5 Flash (Google)", "Groq (llama-3.3-70b-versatile)"],
+    index=0
+)
 
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
@@ -318,53 +382,53 @@ if clear_btn:
     st.session_state.vector_store = None
     st.session_state.indexed_files = []
     st.session_state.dataframes = {}
-    st.success("Vector store di-reset.")
+    st.success("✅ Semua state direset.")
 
+# Build vector store action
 if build_btn:
     if not uploaded_files:
-        st.sidebar.warning("Silakan upload minimal 1 file terlebih dahulu.")
+        st.sidebar.warning("Silakan upload terlebih dahulu minimal 1 file.")
     else:
-        with st.spinner("📦 Memproses file dan membuat vector store..."):
+        with st.spinner("📦 Memproses file dan membangun vector store..."):
             docs = build_documents_from_uploads(uploaded_files)
             if not docs:
-                st.sidebar.error("Tidak ada teks valid berhasil diekstrak. Periksa file.")
+                st.sidebar.error("Tidak ada teks valid berhasil diekstrak — periksa file yang diupload.")
             else:
                 vs = build_faiss_from_documents(docs)
                 st.session_state.vector_store = vs
                 st.session_state.indexed_files = [f.name for f in uploaded_files]
-                st.sidebar.success(f"Vector store terbangun. Dokumen: {len(st.session_state.indexed_files)} | Chunk total: {len(docs)}")
+                st.sidebar.success(f"Vector store siap — {len(st.session_state.indexed_files)} file terindeks, {len(docs)} chunk.")
 
+# Show indexed files
 if st.session_state.indexed_files:
-    st.markdown("**Dokumen terindeks:**")
+    st.markdown("**📚 Dokumen terindeks:**")
     st.write(" • " + "\n • ".join(st.session_state.indexed_files))
+else:
+    st.info("Belum ada dokumen terindeks. Upload file dan klik 'Build Vector Store' jika ingin pakai fitur tanya jawab.")
 
-# -------------------------
-# Data Preview + Auto Analysis
-# -------------------------
+# Data preview & analysis
 if st.session_state.dataframes:
     st.subheader("📊 Data Preview, Profiling & Analisa Otomatis")
-    show_in_app = st.checkbox("Tampilkan analisa di Streamlit", value=True)
+    show_in_app = st.checkbox("Tampilkan analisa di Streamlit (per sheet)", value=True)
     for fname, payload in st.session_state.dataframes.items():
-        with st.expander(f"🔎 {fname}"):
-            for sheet, df in payload["sheets"].items():
-                st.markdown(f"**Sheet:** {sheet}")
-                auto_analyze_dataframe(df, name=fname, sheet_name=sheet, show_in_app=show_in_app)
+        with st.expander(f"🔎 File: {fname}"):
+            for sheet_name, df in payload["sheets"].items():
+                st.markdown(f"**Sheet:** {sheet_name}")
+                auto_analyze_dataframe(df, name=fname, sheet_name=sheet_name, show_in_app=show_in_app)
 
 # -------------------------
 # Query area (selalu tampil)
 # -------------------------
 st.subheader("💬 Ajukan Pertanyaan")
-prompt = st.text_input(
-    "Tanyakan sesuatu berdasarkan dokumen/tabel yang diupload:",
-    placeholder="Misal: Ringkas tren penjualan per wilayah 2024"
-)
+prompt = st.text_input("Tanyakan sesuatu berdasarkan dokumen/tabel yang diupload:",
+                       placeholder="Misal: Ringkas tren penjualan per wilayah 2024")
 ask_btn = st.button("Tanyakan")
 
 if ask_btn:
     if not prompt.strip():
         st.warning("Masukkan pertanyaan terlebih dahulu.")
     elif st.session_state.vector_store is None:
-        st.info("Belum ada vector store. Upload file dan klik 'Build Vector Store'.")
+        st.info("Belum ada vector store. Upload file dan klik 'Build Vector Store' jika ingin jawaban berdasarkan dokumen.")
     else:
         with st.spinner("🔎 Mengambil konteks dari vector store..."):
             results = st.session_state.vector_store.similarity_search(prompt, k=5)
@@ -378,8 +442,7 @@ if ask_btn:
         )
 
         try:
-            if st.sidebar.radio("Pilih LLM Provider:", ["Gemini 2.5 Flash (Google)", "Groq (llama-3.3-70b-versatile)"]) \
-                .startswith("Gemini"):
+            if llm_choice.startswith("Gemini"):
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
                 with st.spinner("🤖 Gemini sedang menjawab..."):
