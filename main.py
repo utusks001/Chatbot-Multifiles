@@ -76,7 +76,7 @@ if not valid_google or not valid_groq:
         if not GOOGLE_API_KEY:
             st.sidebar.warning("⚠️ GOOGLE_API_KEY belum diisi atau kosong.")
         else:
-            st.sidebar.error("❌ GOOGLE_API_KEY tidak valid atau sudah expired. Buat API KEY baru pada https://aistudio.google.com/apikey")
+            st.sidebar.error("❌ GOOGLE_API_KEY tidak valid atau sudah expired. Buat GOOGLE API KEY baru pada https://aistudio.google.com/apikey dan copy paste")
         GOOGLE_API_KEY_INPUT = st.sidebar.text_input(
             "Masukkan GOOGLE_API_KEY (Gemini)", type="password", value=""
         )
@@ -90,7 +90,7 @@ if not valid_google or not valid_groq:
         if not GROQ_API_KEY:
             st.sidebar.warning("⚠️ GROQ_API_KEY belum diisi atau kosong.")
         else:
-            st.sidebar.error("❌ GROQ_API_KEY tidak valid atau sudah expired. Buat API KEY baru pada https://console.groq.com/keys")
+            st.sidebar.error("❌ GROQ_API_KEY tidak valid atau sudah expired. Buat GROQ API KEY baru pada https://console.groq.com/keys dan copy paste")
         GROQ_API_KEY_INPUT = st.sidebar.text_input(
             "Masukkan GROQ_API_KEY (Groq)", type="password", value=""
         )
