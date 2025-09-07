@@ -32,6 +32,32 @@ st.set_page_config(
 )
 
 # -------------------------
+# Helper untuk update .env
+# -------------------------
+def update_env_file(key_name: str, key_value: str):
+    """Update atau tambahkan API key di file .env"""
+    env_path = ".env"
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            lines = f.readlines()
+
+    found = False
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key_name}="):
+            lines[i] = f"{key_name}={key_value}\n"
+            found = True
+            break
+
+    if not found:
+        lines.append(f"{key_name}={key_value}\n")
+
+    with open(env_path, "w") as f:
+        f.writelines(lines)
+
+    os.environ[key_name] = key_value
+
+# -------------------------
 # Fungsi cek validitas API key
 # -------------------------
 def check_google_api_key(key: str) -> bool:
@@ -61,18 +87,31 @@ def check_groq_api_key(key: str) -> bool:
         return False
 
 # -------------------------
-# Validasi API Key dari .env
+# Simpan status invalid di session_state
+# -------------------------
+if "google_invalid" not in st.session_state:
+    st.session_state["google_invalid"] = False
+if "groq_invalid" not in st.session_state:
+    st.session_state["groq_invalid"] = False
+
+# -------------------------
+# Validasi awal API Key dari .env
 # -------------------------
 valid_google = check_google_api_key(GOOGLE_API_KEY)
 valid_groq = check_groq_api_key(GROQ_API_KEY)
 
+if not valid_google:
+    st.session_state["google_invalid"] = True
+if not valid_groq:
+    st.session_state["groq_invalid"] = True
+
 # -------------------------
-# Sidebar input hanya jika invalid/kosong
+# Sidebar input hanya untuk key invalid
 # -------------------------
-if not valid_google or not valid_groq:
+if st.session_state["google_invalid"] or st.session_state["groq_invalid"]:
     st.sidebar.header("🔑 API Keys")
 
-    if not valid_google:
+    if st.session_state["google_invalid"]:
         if not GOOGLE_API_KEY:
             st.sidebar.warning("⚠️ GOOGLE_API_KEY belum diisi atau kosong.")
         else:
@@ -82,11 +121,14 @@ if not valid_google or not valid_groq:
         )
         if GOOGLE_API_KEY_INPUT.strip():
             GOOGLE_API_KEY = GOOGLE_API_KEY_INPUT.strip()
-            valid_google = check_google_api_key(GOOGLE_API_KEY)
-            if valid_google:
-                st.sidebar.success("✅ GOOGLE_API_KEY baru valid.")
+            if check_google_api_key(GOOGLE_API_KEY):
+                update_env_file("GOOGLE_API_KEY", GOOGLE_API_KEY)
+                st.sidebar.success("✅ GOOGLE_API_KEY baru valid dan sudah disimpan ke .env.")
+                st.session_state["google_invalid"] = False
+            else:
+                st.sidebar.error("❌ GOOGLE_API_KEY masih tidak valid.")
 
-    if not valid_groq:
+    if st.session_state["groq_invalid"]:
         if not GROQ_API_KEY:
             st.sidebar.warning("⚠️ GROQ_API_KEY belum diisi atau kosong.")
         else:
@@ -96,14 +138,17 @@ if not valid_google or not valid_groq:
         )
         if GROQ_API_KEY_INPUT.strip():
             GROQ_API_KEY = GROQ_API_KEY_INPUT.strip()
-            valid_groq = check_groq_api_key(GROQ_API_KEY)
-            if valid_groq:
-                st.sidebar.success("✅ GROQ_API_KEY baru valid.")
+            if check_groq_api_key(GROQ_API_KEY):
+                update_env_file("GROQ_API_KEY", GROQ_API_KEY)
+                st.sidebar.success("✅ GROQ_API_KEY baru valid dan sudah disimpan ke .env.")
+                st.session_state["groq_invalid"] = False
+            else:
+                st.sidebar.error("❌ GROQ_API_KEY masih tidak valid.")
 
 # -------------------------
-# Hentikan jika tidak ada key valid
+# Stop jika tidak ada key valid
 # -------------------------
-if not (valid_google or valid_groq):
+if st.session_state["google_invalid"] and st.session_state["groq_invalid"]:
     st.error("❌ Tidak ada API Key valid. Tambahkan di .env atau input di sidebar.")
     st.stop()
 
@@ -364,4 +409,12 @@ if ask_btn:
             render_sources(results)
 
         except Exception as e:
-            st.error(f"❌ Error saat memanggil LLM: {e}")
+            if "401" in str(e) and "Invalid API Key" in str(e):
+                if model_choice.startswith("Gemini"):
+                    st.session_state["google_invalid"] = True
+                    st.error("❌ GOOGLE_API_KEY invalid. Silakan masukkan ulang di sidebar.")
+                else:
+                    st.session_state["groq_invalid"] = True
+                    st.error("❌ GROQ_API_KEY invalid. Silakan masukkan ulang di sidebar.")
+            else:
+                st.error(f"❌ Error saat memanggil LLM: {e}")
