@@ -23,6 +23,10 @@ from langchain_community.vectorstores import FAISS
 load_dotenv()
 OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY")
 
+# Ambil dari .env
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
 st.set_page_config(
     page_title="Gemini + Groq Multi-file Chatbot (FAISS + OCR.Space)",
     page_icon="🤖",
@@ -30,34 +34,31 @@ st.set_page_config(
 )
 
 # -------------------------
-# Sidebar API Key Input
+# Sidebar API Key Input (hanya jika kosong/expired)
 # -------------------------
-st.sidebar.header("🔑 API Keys")
+if not (GOOGLE_API_KEY and GROQ_API_KEY):
+    st.sidebar.header("🔑 API Keys")
 
-# Load dari .env dulu
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+    GOOGLE_API_KEY_INPUT = st.sidebar.text_input(
+        "Masukkan GOOGLE_API_KEY (Gemini)", type="password", value=""
+    )
+    GROQ_API_KEY_INPUT = st.sidebar.text_input(
+        "Masukkan GROQ_API_KEY (Groq)", type="password", value=""
+    )
 
-# Input manual jika kosong atau expired
-GOOGLE_API_KEY_INPUT = st.sidebar.text_input(
-    "Masukkan GOOGLE_API_KEY (Gemini)", type="password", value=""
-)
-GROQ_API_KEY_INPUT = st.sidebar.text_input(
-    "Masukkan GROQ_API_KEY (Groq)", type="password", value=""
-)
+    if GOOGLE_API_KEY_INPUT:
+        GOOGLE_API_KEY = GOOGLE_API_KEY_INPUT
+    if GROQ_API_KEY_INPUT:
+        GROQ_API_KEY = GROQ_API_KEY_INPUT
 
-# Override jika user isi baru
-if GOOGLE_API_KEY_INPUT:
-    GOOGLE_API_KEY = GOOGLE_API_KEY_INPUT
-if GROQ_API_KEY_INPUT:
-    GROQ_API_KEY = GROQ_API_KEY_INPUT
-
-# Validasi
+# Validasi: minimal salah satu harus ada
 if not (GOOGLE_API_KEY or GROQ_API_KEY):
-    st.error("❌ Harus isi GOOGLE_API_KEY atau GROQ_API_KEY di sidebar karena key di .env tidak tersedia/expired.")
+    st.error("❌ GOOGLE_API_KEY atau GROQ_API_KEY tidak tersedia. Tambahkan di .env atau input di sidebar.")
     st.stop()
 
+# -------------------------
 # Embeddings
+# -------------------------
 EMBEDDINGS = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 SPLITTER = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120)
 
@@ -125,7 +126,7 @@ def extract_text_from_image(file_bytes: BytesIO, filename="upload.png"):
         )
         result = response.json()
         if result.get("IsErroredOnProcessing"):
-            st.warning("⚠️ OCR.Space gagal: " + str(result.get("ErrorMessage", ["Unknown error"])))
+            st.warning("⚠️ OCR.Space gagal: " + str(result.get("ErrorMessage", ['Unknown error'])))
             return ""
         text = "\n".join([p["ParsedText"] for p in result.get("ParsedResults", []) if "ParsedText" in p])
         return text.strip()
@@ -204,7 +205,7 @@ def render_sources(snippets):
 st.title("🤖 Gemini 2.5 Flash + Groq Chatbot — Multi-files + OCR.Space")
 st.write("Upload banyak file (PDF, TXT, DOCX, PPTX, Images). Gambar akan diproses dengan OCR.Space API.")
 
-# Sidebar
+# Sidebar upload
 st.sidebar.header("📂 Upload & Build")
 uploaded_files = st.sidebar.file_uploader(
     "Upload files (pdf, txt, docx, pptx, images) — boleh banyak",
