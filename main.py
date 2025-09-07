@@ -21,7 +21,7 @@ from langchain_community.vectorstores import FAISS
 # Config
 # -------------------------
 load_dotenv()
-OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY")  # tetap bisa ambil dari .env kalau ada
+OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY")
 
 st.set_page_config(
     page_title="Gemini + Groq Multi-file Chatbot (FAISS + OCR.Space)",
@@ -33,11 +33,28 @@ st.set_page_config(
 # Sidebar API Key Input
 # -------------------------
 st.sidebar.header("🔑 API Keys")
-GOOGLE_API_KEY = st.sidebar.text_input("Masukkan GOOGLE_API_KEY (Gemini)", type="password")
-GROQ_API_KEY = st.sidebar.text_input("Masukkan GROQ_API_KEY (Groq)", type="password")
 
+# Load dari .env dulu
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# Input manual jika kosong atau expired
+GOOGLE_API_KEY_INPUT = st.sidebar.text_input(
+    "Masukkan GOOGLE_API_KEY (Gemini)", type="password", value=""
+)
+GROQ_API_KEY_INPUT = st.sidebar.text_input(
+    "Masukkan GROQ_API_KEY (Groq)", type="password", value=""
+)
+
+# Override jika user isi baru
+if GOOGLE_API_KEY_INPUT:
+    GOOGLE_API_KEY = GOOGLE_API_KEY_INPUT
+if GROQ_API_KEY_INPUT:
+    GROQ_API_KEY = GROQ_API_KEY_INPUT
+
+# Validasi
 if not (GOOGLE_API_KEY or GROQ_API_KEY):
-    st.error("❌ Harus isi GOOGLE_API_KEY atau GROQ_API_KEY di sidebar sebelum menjalankan.")
+    st.error("❌ Harus isi GOOGLE_API_KEY atau GROQ_API_KEY di sidebar karena key di .env tidak tersedia/expired.")
     st.stop()
 
 # Embeddings
