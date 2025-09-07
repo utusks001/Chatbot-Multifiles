@@ -18,12 +18,10 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
 # -------------------------
-# Config / env
+# Config
 # -------------------------
 load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY")
+OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY")  # tetap bisa ambil dari .env kalau ada
 
 st.set_page_config(
     page_title="Gemini + Groq Multi-file Chatbot (FAISS + OCR.Space)",
@@ -31,8 +29,15 @@ st.set_page_config(
     layout="wide"
 )
 
+# -------------------------
+# Sidebar API Key Input
+# -------------------------
+st.sidebar.header("🔑 API Keys")
+GOOGLE_API_KEY = st.sidebar.text_input("Masukkan GOOGLE_API_KEY (Gemini)", type="password")
+GROQ_API_KEY = st.sidebar.text_input("Masukkan GROQ_API_KEY (Groq)", type="password")
+
 if not (GOOGLE_API_KEY or GROQ_API_KEY):
-    st.error("❌ GOOGLE_API_KEY atau GROQ_API_KEY tidak ditemukan. Tambahkan ke file .env sebelum menjalankan.")
+    st.error("❌ Harus isi GOOGLE_API_KEY atau GROQ_API_KEY di sidebar sebelum menjalankan.")
     st.stop()
 
 # Embeddings
@@ -267,7 +272,11 @@ if ask_btn:
         try:
             if model_choice.startswith("Gemini"):
                 from langchain_google_genai import ChatGoogleGenerativeAI
-                llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-2.5-flash",
+                    temperature=0.2,
+                    google_api_key=GOOGLE_API_KEY
+                )
                 with st.spinner("🤖 Gemini sedang menjawab..."):
                     response = llm.invoke(composed_prompt)
             else:
@@ -287,4 +296,3 @@ if ask_btn:
 
         except Exception as e:
             st.error(f"❌ Error saat memanggil LLM: {e}")
-
