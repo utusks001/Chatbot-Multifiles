@@ -1,7 +1,7 @@
 # main.py
 import os
-from io import BytesIO
 import requests
+from io import BytesIO
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -22,10 +22,8 @@ from langchain_community.vectorstores import FAISS
 # -------------------------
 load_dotenv()
 OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY")
-
-# Ambil dari .env
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 st.set_page_config(
     page_title="Gemini + Groq Multi-file Chatbot (FAISS + OCR.Space)",
@@ -34,26 +32,79 @@ st.set_page_config(
 )
 
 # -------------------------
-# Sidebar API Key Input (hanya jika kosong/expired)
+# Fungsi cek validitas API key
 # -------------------------
-if not (GOOGLE_API_KEY and GROQ_API_KEY):
+def check_google_api_key(key: str) -> bool:
+    if not key:
+        return False
+    try:
+        resp = requests.get(
+            "https://generativelanguage.googleapis.com/v1/models/gemini-pro",
+            params={"key": key},
+            timeout=8,
+        )
+        return resp.status_code == 200
+    except:
+        return False
+
+def check_groq_api_key(key: str) -> bool:
+    if not key:
+        return False
+    try:
+        resp = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=8,
+        )
+        return resp.status_code == 200
+    except:
+        return False
+
+# -------------------------
+# Validasi API Key dari .env
+# -------------------------
+valid_google = check_google_api_key(GOOGLE_API_KEY)
+valid_groq = check_groq_api_key(GROQ_API_KEY)
+
+# -------------------------
+# Sidebar input hanya jika invalid/kosong
+# -------------------------
+if not valid_google or not valid_groq:
     st.sidebar.header("🔑 API Keys")
 
-    GOOGLE_API_KEY_INPUT = st.sidebar.text_input(
-        "Masukkan GOOGLE_API_KEY (Gemini)", type="password", value=""
-    )
-    GROQ_API_KEY_INPUT = st.sidebar.text_input(
-        "Masukkan GROQ_API_KEY (Groq)", type="password", value=""
-    )
+    if not valid_google:
+        if not GOOGLE_API_KEY:
+            st.sidebar.warning("⚠️ GOOGLE_API_KEY belum diisi atau kosong.")
+        else:
+            st.sidebar.error("❌ GOOGLE_API_KEY tidak valid atau sudah expired. Buat API KEY baru pada https://aistudio.google.com/apikey")
+        GOOGLE_API_KEY_INPUT = st.sidebar.text_input(
+            "Masukkan GOOGLE_API_KEY (Gemini)", type="password", value=""
+        )
+        if GOOGLE_API_KEY_INPUT.strip():
+            GOOGLE_API_KEY = GOOGLE_API_KEY_INPUT.strip()
+            valid_google = check_google_api_key(GOOGLE_API_KEY)
+            if valid_google:
+                st.sidebar.success("✅ GOOGLE_API_KEY baru valid.")
 
-    if GOOGLE_API_KEY_INPUT:
-        GOOGLE_API_KEY = GOOGLE_API_KEY_INPUT
-    if GROQ_API_KEY_INPUT:
-        GROQ_API_KEY = GROQ_API_KEY_INPUT
+    if not valid_groq:
+        if not GROQ_API_KEY:
+            st.sidebar.warning("⚠️ GROQ_API_KEY belum diisi atau kosong.")
+        else:
+            st.sidebar.error("❌ GROQ_API_KEY tidak valid atau sudah expired. Buat API KEY baru pada https://console.groq.com/keys")
+        GROQ_API_KEY_INPUT = st.sidebar.text_input(
+            "Masukkan GROQ_API_KEY (Groq)", type="password", value=""
+        )
+        if GROQ_API_KEY_INPUT.strip():
+            GROQ_API_KEY = GROQ_API_KEY_INPUT.strip()
+            valid_groq = check_groq_api_key(GROQ_API_KEY)
+            if valid_groq:
+                st.sidebar.success("✅ GROQ_API_KEY baru valid.")
 
-# Validasi: minimal salah satu harus ada
-if not (GOOGLE_API_KEY or GROQ_API_KEY):
-    st.error("❌ GOOGLE_API_KEY atau GROQ_API_KEY tidak tersedia. Tambahkan di .env atau input di sidebar.")
+# -------------------------
+# Hentikan jika tidak ada key valid
+# -------------------------
+if not (valid_google or valid_groq):
+    st.error("❌ Tidak ada API Key valid. Tambahkan di .env atau input di sidebar.")
     st.stop()
 
 # -------------------------
