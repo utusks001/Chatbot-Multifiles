@@ -122,7 +122,7 @@ if st.session_state["google_invalid"] or st.session_state["groq_invalid"]:
         if GOOGLE_API_KEY_INPUT.strip():
             GOOGLE_API_KEY = GOOGLE_API_KEY_INPUT.strip()
             update_env_file("GOOGLE_API_KEY", GOOGLE_API_KEY)
-            st.sidebar.success("✅ GOOGLE_API_KEY baru disimpan ke .env. Silakan refresh halaman untuk validasi.")
+            st.sidebar.success("✅ GOOGLE_API_KEY baru disimpan ke .env. Silakan lanjut upload file dan build vector.")
             st.session_state["google_invalid"] = False   # hilangkan error setelah input
 
     if st.session_state["groq_invalid"]:
@@ -136,7 +136,7 @@ if st.session_state["google_invalid"] or st.session_state["groq_invalid"]:
         if GROQ_API_KEY_INPUT.strip():
             GROQ_API_KEY = GROQ_API_KEY_INPUT.strip()
             update_env_file("GROQ_API_KEY", GROQ_API_KEY)
-            st.sidebar.success("✅ GROQ_API_KEY baru disimpan ke .env. Silakan refresh halaman untuk validasi.")
+            st.sidebar.success("✅ GROQ_API_KEY baru disimpan ke .env. Silakan lanjut upload file dan build vector.")
             st.session_state["groq_invalid"] = False
 
 # -------------------------
