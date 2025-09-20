@@ -30,9 +30,9 @@ PyMuPDF
 pypdf
 scikit-learn
 langchain-google-genai
-nltk==3.8.1
+nltk
 google-ai-generativelanguage
 huggingface-hub
-openai==0.28.0
-python-multipart==0.0.6
-unstructured==0.7.12
+openai
+python-multipart
+unstructured
