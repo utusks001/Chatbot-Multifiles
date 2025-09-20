@@ -30,6 +30,7 @@ PyMuPDF
 pypdf
 scikit-learn
 langchain-google-genai
+langchain-embeddings
 nltk
 google-ai-generativelanguage
 huggingface-hub
